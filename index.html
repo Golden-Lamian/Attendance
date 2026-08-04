@@ -820,13 +820,13 @@
         <label for="syncNRP">Nomor Registrasi Pegawai (NRP)</label>
         <input type="text" id="syncNRP" placeholder="Contoh: SNI*******">
       </div>
-      <button id="btnSyncProfile" class="btn"
-        onclick="this.style.display='none'; this.disabled=true; syncFaceProfile(this);"
-        style="margin-bottom: 10px;">Sinkronkan Perangkat</button>
       <button type="button" class="btn btn-secondary" onclick="goToRegistrationFromOverlay()"
         style="margin-bottom: 10px; border-color: rgba(99, 102, 241, 0.4); color: var(--text-main);">
         📝 Belum Terdaftar? Ke Tab Registrasi
       </button>
+      <button id="btnSyncProfile" class="btn btn-secondary"
+        onclick="this.style.display='none'; this.disabled=true; syncFaceProfile(this);"
+        style="margin-bottom: 10px;">Sinkronkan Perangkat</button>
       <button type="button" class="btn btn-secondary" onclick="openUnbindOverlay()"
         style="margin-bottom: 10px; border-color: rgba(239, 68, 68, 0.4); color: #ef4444;">
         📱 Ganti HP Baru? Minta Reset Device
