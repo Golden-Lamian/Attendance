@@ -2002,6 +2002,18 @@ async function sendToGAS(payload) {
  */
 function closeBrowserTab() {
   console.log("Mencoba menutup tab browser...");
+  
+  // Sembunyikan & tutup semua modal overlay agar tidak menghalangi layar sukses
+  try {
+    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
+    if (typeof closeUnbindOverlay === 'function') closeUnbindOverlay();
+    document.querySelectorAll('.overlay').forEach(overlay => {
+      overlay.style.display = 'none';
+    });
+  } catch (e) {
+    console.warn("Gagal menyembunyikan overlay:", e);
+  }
+
   try {
     window.opener = null;
     window.open('', '_self', '');
