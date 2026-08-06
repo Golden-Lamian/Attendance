@@ -952,14 +952,15 @@ function openReasonOverlay(attendanceType, selectedWorkingHour = '') {
     if (title) title.innerText = "📋 Kategori / Alasan Terlambat";
     if (sub) sub.innerText = "Waktu masuk kerja melebihi jam mulai shift. Silakan pilih alasan jika ada (opsional):";
     options = [
-      { label: "⏰ Izin Terlambat", value: "Izin Terlambat", note: "Memerlukan Persetujuan Supervisor" },
-      { label: "📝 Lupa Absen", value: "Lupa Absen", note: "Memerlukan Persetujuan Supervisor" }
+      { label: "🛒 Belanja Kebutuhan Outlet", value: "Belanja Kebutuhan Outlet", note: "Memerlukan Persetujuan Area Manager (Tugas Belanja)" },
+      { label: "⏰ Izin Terlambat", value: "Izin Terlambat", note: "Memerlukan Persetujuan Area Manager" },
+      { label: "📝 Lupa Absen", value: "Lupa Absen", note: "Memerlukan Persetujuan Area Manager" }
     ];
   } else if (attendanceType === 'CLOCK_OUT') {
     if (title) title.innerText = "📋 Kategori / Alasan Pulang Awal";
     if (sub) sub.innerText = "Waktu pulang lebih awal dari jam selesai shift. Silakan pilih alasan jika ada (opsional):";
     options = [
-      { label: "🏃 Pulang Awal", value: "Pulang Awal", note: "Memerlukan Persetujuan Supervisor" }
+      { label: "🏃 Pulang Awal", value: "Pulang Awal", note: "Memerlukan Persetujuan Area Manager" }
     ];
   }
 
