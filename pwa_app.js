@@ -146,7 +146,8 @@ function getOrCreateDeviceId() {
     return deviceId;
   }
 
-  // Buat Device ID Unik yang Mengombinasikan Hardware Fingerprint + UUID Persisten Browser
+  // Buat Device ID Unik yang KONSTAN berbasis Hardware Fingerprint HP (Bukan random UUID)
+  // ID ini akan SELALU SAMA pada HP yang sama meskipun localStorage / cache browser dibersihkan
   try {
     const fpData = [
       navigator.userAgent || '',
@@ -159,15 +160,10 @@ function getOrCreateDeviceId() {
     ].join('||');
 
     const hash = fnv1aHash(fpData);
-    const uniqueSuffix = (typeof crypto !== 'undefined' && crypto.randomUUID)
-      ? crypto.randomUUID().substring(0, 8).toUpperCase()
-      : Math.random().toString(36).substring(2, 10).toUpperCase();
-
-    deviceId = 'DEV-ID-' + hash + '-' + uniqueSuffix;
+    deviceId = 'DEV-FP-' + hash;
   } catch (e) {
-    // Fallback jika terjadi kesalahan saat fingerprinting
-    const fallbackUUID = Math.random().toString(36).substring(2, 10).toUpperCase();
-    deviceId = 'DEV-ID-' + Math.abs(fnv1aHash(navigator.userAgent || 'fallback')).toString(16).toUpperCase().padStart(8, '0') + '-' + fallbackUUID;
+    const fallbackHash = fnv1aHash(navigator.userAgent || 'fallback');
+    deviceId = 'DEV-FP-' + fallbackHash;
   }
 
   try {
