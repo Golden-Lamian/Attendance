@@ -1380,23 +1380,48 @@ async function onQRScanSuccess(decodedText, decodedResult) {
         await stopAllCameras(); // stop penuh dilakukan di sini, di luar callback
         dbgLog('✅ Kamera dihentikan, membuka kamera depan...');
 
-        if (!localNRP) {
+        let activeNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
+        
+        // Penanganan iOS Safari / Isolated Webview: Auto-restore NRP dari cloud jika localStorage kosong
+        if (!activeNRP && navigator.onLine) {
+          dbgLog('🔍 LocalStorage kosong, mencoba auto-identify NRP dari Device ID di cloud...');
+          try {
+            const devId = getOrCreateDeviceId();
+            const url = `${GAS_URL}?action=get_user_by_device_id&device_id=${encodeURIComponent(devId)}`;
+            const resp = await fetch(url);
+            const resData = await resp.json();
+            const userInfo = (resData && resData.data && typeof resData.data === 'object') ? resData.data : ((resData && resData.message && typeof resData.message === 'object') ? resData.message : resData);
+            if (resData && (resData.status === 'success' || resData.code === 200) && userInfo && userInfo.nrp) {
+              activeNRP = userInfo.nrp;
+              localStorage.setItem('attendance_registered_nrp', activeNRP);
+              if (userInfo.name) localStorage.setItem('attendance_user_name', userInfo.name);
+              if (userInfo.position) localStorage.setItem('attendance_user_position', userInfo.position);
+              if (userInfo.outlet) localStorage.setItem('attendance_user_outlet', userInfo.outlet);
+              currentUserProfile = userInfo;
+              dbgLog('✅ Auto-restore NRP berhasil: ' + activeNRP);
+            }
+          } catch(e) {
+            console.warn('[iOS Storage Fix] Auto-identify fallback error:', e);
+          }
+        }
+
+        if (!activeNRP) {
           openSyncOverlay();
         } else {
           // === CEK STATUS UNBIND SEBELUM LANJUT ===
-          dbgLog('🔍 Mengecek status unbind untuk NRP: ' + localNRP);
-          const unbindStatus = await checkUnbindStatusFromServer(localNRP);
+          dbgLog('🔍 Mengecek status unbind untuk NRP: ' + activeNRP);
+          const unbindStatus = await checkUnbindStatusFromServer(activeNRP);
           dbgLog('📋 Status unbind: ' + unbindStatus.status);
 
           if (unbindStatus.status === 'PENDING') {
             // Karyawan tidak bisa absen — tampilkan overlay tunggu HR
-            localStorage.setItem('attendance_pending_unbind_nrp', localNRP);
-            showUnbindPendingScreen(localNRP, unbindStatus.requested_at);
+            localStorage.setItem('attendance_pending_unbind_nrp', activeNRP);
+            showUnbindPendingScreen(activeNRP, unbindStatus.requested_at);
             isProcessingQRScan = false;
             return; // Stop di sini
           } else if (unbindStatus.status === 'APPROVED') {
             // Device sudah di-approve untuk diganti — arahkan ke registrasi ulang
-            await handleUnbindApproved(localNRP);
+            await handleUnbindApproved(activeNRP);
             isProcessingQRScan = false;
             return; // Stop di sini
           }
