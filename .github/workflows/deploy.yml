@@ -23,8 +23,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Inject GAS_URL Secret
+        env:
+          GAS_URL_VAL: ${{ secrets.GAS_URL }}
         run: |
-          sed -i 's|__GAS_URL__|${{ secrets.GAS_URL }}|g' pwa_app.js
+          python3 -c "import os; val=os.environ.get('GAS_URL_VAL','').strip(); p='pwa_app.js'; f=open(p,'r'); c=f.read(); f.close(); f=open(p,'w'); f.write(c.replace('__GAS_URL__', val) if val else c); f.close()"
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
