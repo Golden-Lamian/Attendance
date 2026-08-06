@@ -725,10 +725,14 @@
           style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-top:-10px; margin-bottom: 10px;">
           Posisikan QR Code di dalam kotak scanner
         </p>
-        <div style="text-align: center; margin-bottom: 16px;">
+        <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap;">
           <button type="button" class="btn btn-secondary" onclick="openTugasLuarModal()"
-            style="font-size: 0.85rem; padding: 10px; border-radius: 10px; background: rgba(99, 102, 241, 0.15) !important; color: #a5b4fc !important; border: 1px solid rgba(99, 102, 241, 0.35) !important;">
-            📌 Absen Event / Tugas Luar (Tanpa QR Outlet)
+            style="flex: 1; min-width: 160px; font-size: 0.82rem; padding: 10px; border-radius: 10px; background: rgba(99, 102, 241, 0.15) !important; color: #a5b4fc !important; border: 1px solid rgba(99, 102, 241, 0.35) !important;">
+            📌 Absen Tugas Luar
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="openAmLoginModal()"
+            style="flex: 1; min-width: 160px; font-size: 0.82rem; padding: 10px; border-radius: 10px; background: rgba(245, 158, 11, 0.15) !important; color: #fbbf24 !important; border: 1px solid rgba(245, 158, 11, 0.35) !important;">
+            👔 Login Area Manager
           </button>
         </div>
       </div>
@@ -933,9 +937,11 @@
         style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; max-height: 350px; overflow-y: auto;">
         <!-- Dynamic pending approval cards -->
       </div>
-      <div style="display: flex; gap: 10px;">
+      <div style="display: flex; gap: 8px;">
         <button class="btn" onclick="checkSupervisorRole(true)"
           style="flex: 1; background: rgba(255,255,255,0.1); font-size: 0.85rem;">🔄 Refresh</button>
+        <button class="btn" id="amChangePinBtn" onclick="openChangePinModal()"
+          style="flex: 1; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); font-size: 0.85rem; display: none;">🔐 Ubah PIN</button>
         <button class="btn btn-secondary" onclick="closeSupervisorOverlay()"
           style="flex: 1; font-size: 0.85rem;">Tutup</button>
       </div>
@@ -1086,14 +1092,72 @@
         </div>
       </div>
 
-      <style>
-        @keyframes pendingPulse {
-          0%, 100% { transform: scale(1); opacity: 1; }
-          50% { transform: scale(1.12); opacity: 0.7; }
-        }
-      </style>
+  <!-- Area Manager Login Modal -->
+  <div class="overlay" id="amLoginModalOverlay" style="display: none;">
+    <div class="modal-card" style="max-width: 440px; width: 92%;">
+      <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 4px; text-align: center; color: var(--text-main);">
+        👔 Login Area Manager
+      </h2>
+      <p style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-bottom: 16px;">
+        Pilih Nama Area Manager dan masukkan PIN Passcode untuk mengakses Panel Approval.
+      </p>
 
-      <script src="pwa_app.js?v=7.6" type="text/javascript"></script>
+      <div style="display: flex; flex-direction: column; gap: 14px; text-align: left; margin-bottom: 20px;">
+        <div>
+          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Nama Area Manager</label>
+          <select id="amSelectName" style="width: 100%; margin-top: 4px; padding: 11px 14px; border-radius: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600; font-size: 0.95rem;">
+            <option value="">-- Memuat daftar AM... --</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Passcode Area Manager</label>
+          <input type="password" id="amPinInput" placeholder="Masukkan PIN (Default: 1234)" style="width: 100%; margin-top: 4px; padding: 11px 14px; border-radius: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600; letter-spacing: 2px;">
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn-primary" onclick="submitAmLogin()" style="flex: 1; font-weight: 700;">🚀 Login & Buka Approval</button>
+        <button class="btn btn-secondary" onclick="closeAmLoginModal()" style="flex: 1;">Batal</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Change PIN Modal for Area Manager -->
+  <div class="overlay" id="changePinModalOverlay" style="display: none;">
+    <div class="modal-card" style="max-width: 420px; width: 92%;">
+      <h2 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 4px; text-align: center; color: var(--text-main);">
+        🔐 Ubah PIN Passcode Area Manager
+      </h2>
+      <p id="changePinSubText" style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-bottom: 16px;">
+        Masukkan PIN lama Anda dan tentukan PIN baru (minimal 4 digit).
+      </p>
+
+      <div style="display: flex; flex-direction: column; gap: 12px; text-align: left; margin-bottom: 20px;">
+        <div>
+          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Lama Saat Ini</label>
+          <input type="password" id="oldPinInput" placeholder="Masukkan PIN lama" style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600;">
+        </div>
+
+        <div>
+          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Baru (Min. 4 Digit)</label>
+          <input type="password" id="newPinInput" placeholder="Masukkan PIN baru" style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600;">
+        </div>
+
+        <div>
+          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Konfirmasi PIN Baru</label>
+          <input type="password" id="confirmNewPinInput" placeholder="Ulangi PIN baru" style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600;">
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn-primary" onclick="submitChangeAmPin()" style="flex: 1; font-weight: 700;">💾 Simpan PIN Baru</button>
+        <button class="btn btn-secondary" id="cancelChangePinBtn" onclick="closeChangePinModal()" style="flex: 1;">Batal</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="pwa_app.js?v=7.8" type="text/javascript"></script>
 </body>
 
 </html>

@@ -2982,12 +2982,29 @@ async function identifyDeviceUser() {
   const deviceId = getOrCreateDeviceId();
   const localNRP = localStorage.getItem('attendance_registered_nrp') || '';
 
-  // Render instan terlebih dahulu dari LocalStorage (jika ada) tanpa menunggu respon jaringan
   const banner = document.getElementById('userHeaderBanner');
   const nameEl = document.getElementById('userNameText');
   const nrpEl = document.getElementById('userNrpVal');
   const posEl = document.getElementById('userPosVal');
   const outletEl = document.getElementById('userOutletVal');
+
+  // Cek jika ada Sesi Area Manager tersimpan di LocalStorage
+  const amSessionStr = localStorage.getItem('attendance_am_session');
+  if (amSessionStr) {
+    try {
+      const amSess = JSON.parse(amSessionStr);
+      if (amSess && amSess.name) {
+        if (banner) banner.style.display = 'block';
+        if (nameEl) nameEl.innerText = `👋 Halo Area Manager, ${amSess.name}`;
+        if (nrpEl) nrpEl.innerText = 'Area Manager';
+        if (posEl) posEl.innerText = 'Area Manager';
+        if (outletEl) outletEl.innerText = amSess.outlet || 'Semua Area AM';
+
+        submitAmLogin(amSess.name, amSess.pin, true);
+        return;
+      }
+    } catch (e) {}
+  }
 
   if (localNRP) {
     const cachedName = localStorage.getItem('attendance_user_name') || localNRP;
@@ -3239,8 +3256,20 @@ function closeSupervisorOverlay() {
  * Mengirim Keputusan Supervisor (APPROVED / REJECTED) ke GAS Server Cloud
  */
 async function handleSupervisorDecision(targetNrp, targetTimestamp, decision, cardIndex) {
-  const localNRP = localStorage.getItem('attendance_registered_nrp');
-  if (!localNRP) return;
+  let supervisorNrp = localStorage.getItem('attendance_registered_nrp');
+  let amSessionName = '';
+  const amSessStr = localStorage.getItem('attendance_am_session');
+  if (amSessStr) {
+    try {
+      const parsedAm = JSON.parse(amSessStr);
+      if (parsedAm && parsedAm.name) {
+        amSessionName = parsedAm.name;
+        if (!supervisorNrp) supervisorNrp = parsedAm.name;
+      }
+    } catch(e){}
+  }
+
+  if (!supervisorNrp) return;
 
   const actionsDiv = document.getElementById('spvActions_' + cardIndex);
   if (actionsDiv) {
@@ -3249,7 +3278,7 @@ async function handleSupervisorDecision(targetNrp, targetTimestamp, decision, ca
 
   const payload = {
     action: "update_approval_status",
-    supervisor_nrp: localNRP,
+    supervisor_nrp: supervisorNrp,
     target_nrp: targetNrp,
     target_timestamp: targetTimestamp,
     decision: decision
@@ -3265,13 +3294,274 @@ async function handleSupervisorDecision(targetNrp, targetTimestamp, decision, ca
 
     if (resData && resData.status === "success") {
       showScanResult("✅ " + resData.message, "success");
-      await checkSupervisorRole(false);
+      if (amSessionName) {
+        await submitAmLogin(amSessionName, JSON.parse(amSessStr).pin, true);
+      } else {
+        await checkSupervisorRole(false);
+      }
     } else {
       showScanResult("❌ Gagal: " + (resData ? resData.message : "Terjadi kesalahan"), "error");
-      await checkSupervisorRole(false);
+      if (amSessionName) {
+        await submitAmLogin(amSessionName, JSON.parse(amSessStr).pin, true);
+      } else {
+        await checkSupervisorRole(false);
+      }
     }
   } catch (err) {
     console.error("Gagal mengirim persetujuan supervisor:", err);
     showScanResult("❌ Gagal terhubung ke server", "error");
+  }
+}
+
+/**
+ * Membuka Modal Login Area Manager & Mengambil daftar nama AM dari GAS
+ */
+async function openAmLoginModal() {
+  const overlay = document.getElementById('amLoginModalOverlay');
+  const select = document.getElementById('amSelectName');
+  if (overlay) overlay.style.display = 'flex';
+
+  if (select) {
+    select.innerHTML = '<option value="">⏳ Memuat daftar Area Manager...</option>';
+    try {
+      const response = await fetch(GAS_URL + "?action=get_am_list");
+      const resData = await response.json();
+      const amList = (resData && (resData.data || resData.message)) ? (resData.data || resData.message) : [];
+
+      if (Array.isArray(amList) && amList.length > 0) {
+        select.innerHTML = '<option value="">-- Pilih Area Manager --</option>';
+        amList.forEach(am => {
+          const opt = document.createElement('option');
+          opt.value = am;
+          opt.innerText = am;
+          select.appendChild(opt);
+        });
+      } else {
+        select.innerHTML = '<option value="">⚠️ Tidak ada data AM terdaftar di tab AM Baru</option>';
+      }
+    } catch (err) {
+      console.error("Gagal mengambil daftar AM:", err);
+      select.innerHTML = '<option value="">❌ Gagal terhubung ke server</option>';
+    }
+  }
+}
+
+function closeAmLoginModal() {
+  const overlay = document.getElementById('amLoginModalOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+/**
+ * Memproses Submit Login Area Manager (Nama + PIN)
+ */
+async function submitAmLogin(amNameOver = null, amPinOver = null, isAutoLogin = false) {
+  const selectEl = document.getElementById('amSelectName');
+  const pinEl = document.getElementById('amPinInput');
+
+  const amName = amNameOver || (selectEl ? selectEl.value : '');
+  const pin = amPinOver || (pinEl ? pinEl.value : '');
+
+  if (!amName) {
+    alert("Silakan pilih Nama Area Manager terlebih dahulu.");
+    return;
+  }
+  if (!pin) {
+    alert("Silakan masukkan PIN Passcode Area Manager.");
+    return;
+  }
+
+  if (!isAutoLogin) {
+    showScanResult("⏳ Verifikasi Login Area Manager...", "info");
+  }
+
+  try {
+    const url = GAS_URL + "?action=am_login&am_name=" + encodeURIComponent(amName) + "&pin=" + encodeURIComponent(pin);
+    const response = await fetch(url);
+    const resData = await response.json();
+
+    const dataObj = (resData && resData.data && typeof resData.data === 'object') ? resData.data : resData;
+    const isSuccess = resData && (resData.status === "success" || resData.code === 200);
+
+    if (isSuccess && dataObj) {
+      localStorage.setItem('attendance_am_session', JSON.stringify({
+        name: amName,
+        pin: pin,
+        outlet: dataObj.supervisor_outlet || '',
+        is_am: true,
+        login_time: Date.now()
+      }));
+
+      const banner = document.getElementById('userHeaderBanner');
+      const nameEl = document.getElementById('userNameText');
+      const nrpEl = document.getElementById('userNrpVal');
+      const posEl = document.getElementById('userPosVal');
+      const outletEl = document.getElementById('userOutletVal');
+
+      if (banner) banner.style.display = 'block';
+      if (nameEl) nameEl.innerText = `👋 Halo Area Manager, ${amName}`;
+      if (nrpEl) nrpEl.innerText = 'Area Manager';
+      if (posEl) posEl.innerText = 'Area Manager';
+      if (outletEl) outletEl.innerText = dataObj.supervisor_outlet || 'Semua Area AM';
+
+      const spvHeaderBtn = document.getElementById('spvHeaderBtn');
+      const spvHeaderBadge = document.getElementById('spvHeaderBadge');
+      const changePinBtn = document.getElementById('amChangePinBtn');
+      if (spvHeaderBtn) {
+        spvHeaderBtn.style.display = 'inline-flex';
+        const labelSpan = spvHeaderBtn.querySelector('span');
+        if (labelSpan) labelSpan.innerText = "📋 Approval AM";
+      }
+      if (spvHeaderBadge) {
+        spvHeaderBadge.innerText = (dataObj.pending_requests || []).length;
+      }
+      if (changePinBtn) {
+        changePinBtn.style.display = 'inline-block';
+      }
+
+      cachedSupervisorPending = dataObj.pending_requests || [];
+      renderSupervisorPendingList(dataObj);
+
+      closeAmLoginModal();
+
+      const isDefaultPin = (dataObj.is_default_pin === true) || (pin === "1234");
+      if (isDefaultPin) {
+        openChangePinModal(true);
+        alert("⚠️ PERINGATAN KEAMANAN: Anda masih menggunakan PIN Default ('1234'). Anda WAJIB mengganti PIN baru terlebih dahulu sebelum dapat mengakses persetujuan.");
+        return;
+      }
+
+      if (!isAutoLogin) {
+        showScanResult("✅ Berhasil Login sebagai Area Manager (" + amName + ")", "success");
+        openSupervisorOverlay();
+      }
+    } else {
+      const errMsg = resData ? (resData.message || resData.error || "Login Gagal") : "Login Gagal";
+      alert("❌ " + errMsg);
+    }
+  } catch (err) {
+    console.error("Error submit AM login:", err);
+    alert("❌ Gagal terhubung ke server untuk verifikasi Login AM.");
+  }
+}
+
+let isForcedPinChangeActive = false;
+
+function openChangePinModal(isForced = false) {
+  isForcedPinChangeActive = isForced;
+  const overlay = document.getElementById('changePinModalOverlay');
+  const cancelBtn = document.getElementById('cancelChangePinBtn');
+  const subText = document.getElementById('changePinSubText');
+  const oldPinInput = document.getElementById('oldPinInput');
+
+  if (oldPinInput && isForced) {
+    oldPinInput.value = "1234";
+  }
+
+  if (cancelBtn) {
+    cancelBtn.style.display = isForced ? 'none' : 'block';
+  }
+  if (subText) {
+    subText.innerHTML = isForced
+      ? "<strong style='color: #ef4444;'>⚠️ PERINGATAN KEAMANAN:</strong> Anda menggunakan PIN Default ('1234'). Silakan buat PIN baru (minimal 4 digit) untuk dapat melanjutkan."
+      : "Masukkan PIN lama Anda dan tentukan PIN baru (minimal 4 digit).";
+  }
+
+  if (overlay) overlay.style.display = 'flex';
+}
+
+function closeChangePinModal() {
+  if (isForcedPinChangeActive) {
+    alert("⚠️ Anda wajib mengubah PIN default terlebih dahulu sebelum dapat melanjutkan.");
+    return;
+  }
+  const overlay = document.getElementById('changePinModalOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+/**
+ * Memproses Perubahan PIN Area Manager
+ */
+async function submitChangeAmPin() {
+  const amSessionStr = localStorage.getItem('attendance_am_session');
+  if (!amSessionStr) {
+    alert("Sesi Area Manager tidak ditemukan. Silakan login ulang terlebih dahulu.");
+    return;
+  }
+  let amName = '';
+  try {
+    const parsed = JSON.parse(amSessionStr);
+    amName = parsed.name || '';
+  } catch(e){}
+
+  if (!amName) {
+    alert("Sesi Area Manager tidak valid.");
+    return;
+  }
+
+  const oldPin = (document.getElementById('oldPinInput') ? document.getElementById('oldPinInput').value : '').trim();
+  const newPin = (document.getElementById('newPinInput') ? document.getElementById('newPinInput').value : '').trim();
+  const confirmPin = (document.getElementById('confirmNewPinInput') ? document.getElementById('confirmNewPinInput').value : '').trim();
+
+  if (!oldPin) {
+    alert("Silakan masukkan PIN Lama Anda.");
+    return;
+  }
+  if (!newPin || newPin.length < 4) {
+    alert("PIN Baru minimal 4 digit.");
+    return;
+  }
+  if (newPin === "1234") {
+    alert("❌ PIN Baru tidak boleh menggunakan PIN default '1234'. Silakan buat kombinasi PIN unik yang baru.");
+    return;
+  }
+  if (newPin !== confirmPin) {
+    alert("Konfirmasi PIN Baru tidak cocok!");
+    return;
+  }
+
+  showScanResult("⏳ Memperbarui PIN Area Manager...", "info");
+
+  try {
+    const payload = {
+      action: "change_am_pin",
+      am_name: amName,
+      old_pin: oldPin,
+      new_pin: newPin
+    };
+
+    const response = await fetch(GAS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload)
+    });
+    const resData = await response.json();
+
+    if (resData && (resData.status === "success" || resData.code === 200)) {
+      localStorage.setItem('attendance_am_session', JSON.stringify({
+        name: amName,
+        pin: newPin,
+        is_am: true,
+        login_time: Date.now()
+      }));
+
+      const wasForced = isForcedPinChangeActive;
+      isForcedPinChangeActive = false;
+      
+      const overlay = document.getElementById('changePinModalOverlay');
+      if (overlay) overlay.style.display = 'none';
+
+      alert("✅ PIN Area Manager berhasil diperbarui!");
+      showScanResult("✅ PIN Area Manager berhasil diperbarui!", "success");
+
+      if (wasForced) {
+        openSupervisorOverlay();
+      }
+    } else {
+      const errMsg = resData ? (resData.message || resData.error || "Gagal mengubah PIN") : "Gagal mengubah PIN";
+      alert("❌ " + errMsg);
+    }
+  } catch (err) {
+    console.error("Error changing AM PIN:", err);
+    alert("❌ Gagal terhubung ke server untuk mengubah PIN.");
   }
 }
