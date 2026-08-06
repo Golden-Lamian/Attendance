@@ -29,6 +29,51 @@ let faceVerified = false;
 let baselineSmileRatio = null;
 let isAttendanceSubmitted = false;
 
+// Keadaan Tugas Luar / Event
+let isTugasLuarMode = false;
+let tugasLuarEventName = "";
+
+function openTugasLuarModal() {
+  const overlay = document.getElementById('tugasLuarOverlay');
+  const input = document.getElementById('tugasLuarEventName');
+  if (input) input.value = '';
+  if (overlay) overlay.style.display = 'flex';
+}
+
+function closeTugasLuarModal() {
+  const overlay = document.getElementById('tugasLuarOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function startTugasLuarScan() {
+  const input = document.getElementById('tugasLuarEventName');
+  const eventName = input ? input.value.trim() : '';
+  if (!eventName) {
+    alert("Harap masukkan Nama Event / Nama Kegiatan terlebih dahulu.");
+    return;
+  }
+
+  isTugasLuarMode = true;
+  tugasLuarEventName = eventName;
+  closeTugasLuarModal();
+
+  // Set simulated QR data for Tugas Luar Event
+  scannedQRData = {
+    outlet: "EVENT_" + eventName.toUpperCase().replace(/\s+/g, '_'),
+    totp_token: "TUGAS_LUAR_TOKEN",
+    timestamp: Math.floor(Date.now() / 1000)
+  };
+
+  // Stop QR Scanner and transition to Face Verification (Step 2)
+  stopQRScanner();
+  const step1 = document.getElementById('scanStep1');
+  const step2 = document.getElementById('scanStep2');
+  if (step1) step1.style.display = 'none';
+  if (step2) step2.style.display = 'block';
+
+  startScanCameraAndDetect();
+}
+
 /**
  * Helper untuk mendapatkan tanggal lokal (YYYY-MM-DD) sesuai zona waktu pengguna (bukan UTC)
  */
@@ -603,6 +648,8 @@ function resetToScanStep1() {
   faceVerified = false;
   baselineSmileRatio = null;
   latestLiveDescriptor = null;
+  isTugasLuarMode = false;
+  tugasLuarEventName = "";
   const step1 = document.getElementById('scanStep1');
   const step2 = document.getElementById('scanStep2');
   const step3 = document.getElementById('scanStep3');
@@ -1853,6 +1900,8 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
       approvalTag = " [Supervisor Approval Required | " + activeReason + "]";
     }
 
+    let notesText = "Absen " + typeLabel + (selectedWorkingHour ? (" (" + selectedWorkingHour + ")") : "") + " via PWA" + approvalTag;
+
     const payload = {
       nrp: localNRP,
       outlet: scannedQRData.outlet || scannedQRData.outlet_id,
@@ -1867,14 +1916,22 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
       attendance_type: attendanceType,
       working_hour: selectedWorkingHour || "",
       device_id: getOrCreateDeviceId(),
-      notes: "Absen " + typeLabel + (selectedWorkingHour ? (" (" + selectedWorkingHour + ")") : "") + " via PWA" + approvalTag
+      notes: notesText
     };
+
+    if (isTugasLuarMode) {
+      payload.is_tugas_luar = true;
+      payload.tugas_luar_notes = tugasLuarEventName;
+      payload.notes = "Absen " + typeLabel + " (Tugas Luar Event: " + tugasLuarEventName + ") [Supervisor Approval Required | Tugas Luar: " + tugasLuarEventName + "]";
+    }
 
     if (navigator.onLine) {
       sendToGAS(payload);
     } else {
       enqueueOfflineRecord(payload);
     }
+    isTugasLuarMode = false;
+    tugasLuarEventName = "";
   }
 
   // Ambil lokasi GPS HP dengan validasi presisi tinggi
@@ -2375,10 +2432,10 @@ async function uploadFaceEmbeddingToCloud(nrp, embedding, deviceId) {
       console.log("Membaca respon JSON dari GAS register_face:", e);
     }
 
-    if (resData) {
+    if (resData && typeof resData === "object") {
       return resData;
     }
-    return { status: "success", message: "Registrasi wajah berhasil disimpan." };
+    return { status: "error", message: "Respon server tidak valid atau gagal diproses. Silakan coba lagi." };
   } catch (err) {
     console.error("Gagal mengunggah data wajah ke cloud:", err);
     return { status: "error", message: "Gagal terhubung ke server cloud: " + err.toString() };
@@ -3040,7 +3097,8 @@ async function checkSupervisorRoleForNRP(targetNRP, showToast = false) {
       isSupervisorRole = true;
       cachedSupervisorPending = dataObj.pending_requests || resData.pending_requests || [];
 
-      const spvName = dataObj.supervisor_name || resData.supervisor_name || targetNRP;
+      const isAM = dataObj.is_area_manager || resData.is_area_manager || false;
+      const roleTitle = isAM ? "Area Manager" : "Supervisor";
 
       const banner = document.getElementById('supervisorBanner');
       const badge = document.getElementById('spvBadgeCount');
@@ -3048,15 +3106,19 @@ async function checkSupervisorRoleForNRP(targetNRP, showToast = false) {
       const spvHeaderBtn = document.getElementById('spvHeaderBtn');
       const spvHeaderBadge = document.getElementById('spvHeaderBadge');
 
-      if (spvHeaderBtn) spvHeaderBtn.style.display = 'inline-flex';
+      if (spvHeaderBtn) {
+        spvHeaderBtn.style.display = 'inline-flex';
+        const labelSpan = spvHeaderBtn.querySelector('span');
+        if (labelSpan) labelSpan.innerText = isAM ? "📋 Approval AM" : "📋 Approval";
+      }
       if (spvHeaderBadge) spvHeaderBadge.innerText = cachedSupervisorPending.length;
 
       if (banner) banner.style.display = 'none';
       if (badge) badge.innerText = cachedSupervisorPending.length + " Pengajuan";
-      if (spvText) spvText.innerText = "Panel Supervisor";
+      if (spvText) spvText.innerText = "Panel " + roleTitle;
 
       if (showToast) {
-        showScanResult("✅ Akses Supervisor Aktif (" + spvName + "): " + cachedSupervisorPending.length + " antrean", "info");
+        showScanResult("✅ Akses " + roleTitle + " Aktif (" + spvName + "): " + cachedSupervisorPending.length + " antrean", "info");
       }
       renderSupervisorPendingList(dataObj);
     } else {
@@ -3094,11 +3156,13 @@ function renderSupervisorPendingList(data) {
   if (!container) return;
 
   const requests = data.pending_requests || cachedSupervisorPending || [];
-  const spvName = data.supervisor_name || "Supervisor";
+  const isAM = data.is_area_manager || false;
+  const roleTitle = isAM ? "Area Manager" : "Supervisor";
+  const spvName = data.supervisor_name || roleTitle;
   const spvOutlet = data.supervisor_outlet || "Semua Area";
 
   if (sub) {
-    sub.innerText = `Supervisor: ${spvName} | Area: ${spvOutlet}`;
+    sub.innerText = `${roleTitle}: ${spvName} | Area: ${spvOutlet}`;
   }
 
   container.innerHTML = '';

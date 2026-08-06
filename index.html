@@ -722,8 +722,15 @@
           </div>
         </div>
         <p
-          style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-top:-10px; margin-bottom: 14px;">
+          style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-top:-10px; margin-bottom: 10px;">
           Posisikan QR Code di dalam kotak scanner
+        </p>
+        <div style="text-align: center; margin-bottom: 16px;">
+          <button type="button" class="btn btn-secondary" onclick="openTugasLuarModal()"
+            style="font-size: 0.85rem; padding: 10px; border-radius: 10px; background: rgba(99, 102, 241, 0.15) !important; color: #a5b4fc !important; border: 1px solid rgba(99, 102, 241, 0.35) !important;">
+            📌 Absen Event / Tugas Luar (Tanpa QR Outlet)
+          </button>
+        </div>
       </div>
 
       <div id="scanStep2" style="display: none; position: relative;">
@@ -976,6 +983,26 @@
               Kirim ke HR</button>
             <button type="button" class="btn btn-secondary" onclick="closeUnbindOverlay()"
               style="flex: 0.8; font-size: 0.85rem;">Batal</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal Form Absen Event / Tugas Luar -->
+      <div id="tugasLuarOverlay" class="overlay" style="display: none;">
+        <div class="modal-card">
+          <h3 style="font-size: 1.2rem; font-weight: 700; color: #818cf8; margin-bottom: 8px;">📌 Absen Event / Tugas Luar</h3>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px; line-height: 1.4;">
+            Gunakan fitur ini jika Anda bertugas di luar outlet / event khusus. Pengajuan absensi memerlukan verifikasi wajah & persetujuan Supervisor.
+          </p>
+
+          <div class="form-group" style="text-align: left;">
+            <label for="tugasLuarEventName">Nama Event / Nama Kegiatan *</label>
+            <input type="text" id="tugasLuarEventName" placeholder="Contoh: Event Food Expo Kemayoran" required>
+          </div>
+
+          <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button type="button" class="btn" onclick="startTugasLuarScan()" style="flex: 1.2;">Lanjut Verifikasi Wajah 📸</button>
+            <button type="button" class="btn btn-secondary" onclick="closeTugasLuarModal()" style="flex: 0.8;">Batal</button>
           </div>
         </div>
       </div>
