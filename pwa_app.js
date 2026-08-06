@@ -4,8 +4,7 @@
  */
 
 // Konfigurasi Endpoint Google Apps Script Web App Anda
-// Nilai __GAS_URL__ akan diinjeksi secara otomatis oleh GitHub Actions dari GitHub Secret (secrets.GAS_URL)
-const GAS_URL = "__GAS_URL__";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzW8DEIarp94S62cG5w5GA4gb6I4cdYB3f8TceJks7NaM3UOjuTLqa2kD0YaL7mEMoI/exec";
 
 // Global Variables
 let currentView = 'scan';
