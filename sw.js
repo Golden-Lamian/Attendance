@@ -1,4 +1,4 @@
-const CACHE_NAME = 'attendance-pwa-v42';
+const CACHE_NAME = 'attendance-pwa-v43';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -6,22 +6,22 @@ const ASSETS_TO_CACHE = [
   './qrcode.min.js',
   'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js',
   'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/tiny_face_detector_model-weights_manifest.json',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/tiny_face_detector_model-shard1',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_landmark_68_model-weights_manifest.json',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_landmark_68_model-shard1',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-weights_manifest.json',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-shard1',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-shard2'
+  './models/tiny_face_detector_model-weights_manifest.json',
+  './models/tiny_face_detector_model-shard1',
+  './models/face_landmark_68_model-weights_manifest.json',
+  './models/face_landmark_68_model-shard1',
+  './models/face_recognition_model-weights_manifest.json',
+  './models/face_recognition_model-shard1',
+  './models/face_recognition_model-shard2'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       console.log('[Service Worker] Caching app shell and AI face models');
-      return cache.addAll(ASSETS_TO_CACHE).catch(err => {
-        console.warn('[Service Worker] Partial cache warning:', err);
-      });
+      return Promise.allSettled(
+        ASSETS_TO_CACHE.map(url => cache.add(url).catch(err => console.warn('[Service Worker Cache Error]', url, err)))
+      );
     })
   );
   self.skipWaiting();

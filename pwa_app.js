@@ -557,39 +557,89 @@ function stopRegistrationCamera() {
 // FACE API MODELS
 // =========================================================================
 
-async function loadFaceApiModels() {
+async function loadFaceApiModels(retryCount = 0) {
   const LOCAL_MODEL_URL = './models';
-  const CDN_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
+  const CDN_MODEL_URLS = [
+    'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model',
+    'https://unpkg.com/@vladmandic/face-api/model'
+  ];
 
-  console.log("Memuat model AI face-api...");
+  console.log(`[AI Model] Memuat model AI face-api... (percobaan #${retryCount + 1})`);
 
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  const loadingText = document.getElementById('loadingOverlayText');
+  const loadingErrBox = document.getElementById('loadingOverlayErrBox');
+
+  if (loadingOverlay) loadingOverlay.style.display = 'flex';
+  if (loadingText) loadingText.innerText = "Mengunduh Model AI Wajah...";
+  if (loadingErrBox) loadingErrBox.style.display = 'none';
+
+  const withTimeout = (promise, ms = 15000) => {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Waktu pengunduhan habis (Timeout 15s)')), ms))
+    ]);
+  };
+
+  // 1. Coba dari folder ./models lokal terlebih dahulu (paralel)
   try {
-    await faceapi.nets.tinyFaceDetector.loadFromUri(LOCAL_MODEL_URL);
-    await faceapi.nets.faceLandmark68Net.loadFromUri(LOCAL_MODEL_URL);
-    await faceapi.nets.faceRecognitionNet.loadFromUri(LOCAL_MODEL_URL);
+    if (typeof faceapi === 'undefined') {
+      throw new Error("Library face-api.js belum siap atau tidak terdeteksi.");
+    }
+
+    await withTimeout(Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(LOCAL_MODEL_URL),
+      faceapi.nets.faceLandmark68Net.loadFromUri(LOCAL_MODEL_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(LOCAL_MODEL_URL)
+    ]), 15000);
 
     isModelsLoaded = true;
-    const loadingOverlay = document.getElementById('loadingOverlay');
     if (loadingOverlay) loadingOverlay.style.display = 'none';
-    console.log("Model AI wajah berhasil dimuat dari folder ./models/ lokal!");
-    return;
+    console.log("✅ Model AI wajah berhasil dimuat dari folder ./models/ lokal!");
+    return true;
   } catch (localErr) {
-    console.warn("Folder model ./models/ lokal tidak terdeteksi, mencoba CDN/CacheStorage HP...", localErr);
+    console.warn("⚠️ Gagal memuat dari ./models/ lokal, mencoba CDN mirror...", localErr);
   }
 
-  try {
-    await faceapi.nets.tinyFaceDetector.loadFromUri(CDN_MODEL_URL);
-    await faceapi.nets.faceLandmark68Net.loadFromUri(CDN_MODEL_URL);
-    await faceapi.nets.faceRecognitionNet.loadFromUri(CDN_MODEL_URL);
+  // 2. Fallback ke CDN mirrors
+  for (const cdnUrl of CDN_MODEL_URLS) {
+    try {
+      console.log(`[AI Model] Mencoba memuat dari CDN: ${cdnUrl}`);
+      await withTimeout(Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(cdnUrl),
+        faceapi.nets.faceLandmark68Net.loadFromUri(cdnUrl),
+        faceapi.nets.faceRecognitionNet.loadFromUri(cdnUrl)
+      ]), 15000);
 
-    isModelsLoaded = true;
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    if (loadingOverlay) loadingOverlay.style.display = 'none';
-    console.log("Model AI wajah berhasil dimuat dan tersimpan di cache HP!");
-  } catch (error) {
-    console.error("Gagal memuat model face-api.js:", error);
-    alert("Gagal memuat model AI. Pastikan perangkat Anda terhubung ke internet setidaknya satu kali untuk menyimpan model di HP.");
+      isModelsLoaded = true;
+      if (loadingOverlay) loadingOverlay.style.display = 'none';
+      console.log(`✅ Model AI wajah berhasil dimuat dari CDN (${cdnUrl})!`);
+      return true;
+    } catch (cdnErr) {
+      console.warn(`⚠️ Gagal memuat dari CDN (${cdnUrl}):`, cdnErr);
+    }
   }
+
+  // 3. Jika gagal dari semua sumber
+  console.error("❌ Gagal memuat model face-api.js dari semua sumber.");
+  if (loadingOverlay) {
+    if (loadingErrBox) {
+      loadingErrBox.style.display = 'block';
+      loadingErrBox.innerHTML = `
+        <div style="color: #fca5a5; margin-bottom: 10px; font-size: 0.85rem;">⚠️ Gagal memuat model AI wajah. Pastikan koneksi terhubung.</div>
+        <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+          <button type="button" onclick="loadFaceApiModels(${retryCount + 1})" class="btn" style="padding: 6px 14px; font-size: 0.8rem; width: auto; display: inline-block;">🔄 Coba Lagi</button>
+          <button type="button" onclick="dismissLoadingOverlay()" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.8rem; width: auto; display: inline-block;">Lanjutkan Tanpa AI</button>
+        </div>
+      `;
+    }
+  }
+  return false;
+}
+
+function dismissLoadingOverlay() {
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  if (loadingOverlay) loadingOverlay.style.display = 'none';
 }
 
 // =========================================================================
@@ -2969,93 +3019,39 @@ async function submitChangeAmPin() {
   }
 }
 
-const CACHE_NAME = 'attendance-pwa-v42';
-const ASSETS_TO_CACHE = [
-  './',
-  './index.html',
-  './pwa_app.js',
-  './qrcode.min.js',
-  'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/tiny_face_detector_model-weights_manifest.json',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/tiny_face_detector_model-shard1',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_landmark_68_model-weights_manifest.json',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_landmark_68_model-shard1',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-weights_manifest.json',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-shard1',
-  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-shard2'
-];
+// =========================================================================
+// PWA INITIALIZATION & SERVICE WORKER REGISTRATION
+// =========================================================================
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      console.log('[Service Worker] Caching app shell and AI face models');
-      return cache.addAll(ASSETS_TO_CACHE).catch(err => {
-        console.warn('[Service Worker] Partial cache warning:', err);
+document.addEventListener('DOMContentLoaded', () => {
+  console.log("🚀 Initializing Smart Attendance PWA...");
+
+  // Register Service Worker for offline caching
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').then((reg) => {
+        console.log('[PWA] Service Worker registered successfully with scope:', reg.scope);
+      }).catch((err) => {
+        console.warn('[PWA] Service Worker registration failed:', err);
       });
-    })
-  );
-  self.skipWaiting();
-});
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keyList) => {
-      return Promise.all(
-        keyList.map((key) => {
-          if (key !== CACHE_NAME) {
-            return caches.delete(key);
-          }
-        })
-      );
-    })
-  );
-  self.clients.claim();
-});
-
-self.addEventListener('fetch', (event) => {
-  const url = event.request.url;
-
-  if (
-    event.request.method !== 'GET' ||
-    url.includes('script.google.com') ||
-    url.includes('script.googleusercontent.com')
-  ) {
-    return;
+    });
   }
 
-  if (url.includes('pwa_app.js') || url.includes('index.html') || url.endsWith('/')) {
-    event.respondWith(
-      fetch(event.request).then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseToCache));
-        }
-        return networkResponse;
-      }).catch(() => caches.match(event.request))
-    );
-    return;
+  // Identify device user profile
+  try {
+    identifyDeviceUser();
+  } catch (e) {
+    console.warn("Error running identifyDeviceUser on startup:", e);
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).then((networkResponse) => {
-        if (networkResponse.status === 200 && url.startsWith('http')) {
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache).catch(() => { });
-          });
-        }
-        return networkResponse;
-      }).catch(err => {
-        console.warn('[Service Worker] Fetch failed:', err);
-      });
-    })
-  );
+  // Load Face API Models on startup
+  try {
+    loadFaceApiModels();
+  } catch (e) {
+    console.warn("Error starting loadFaceApiModels on startup:", e);
+  }
 });
+
 
 
 

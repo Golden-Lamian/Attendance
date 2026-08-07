@@ -787,11 +787,12 @@
 
   <!-- Loading screen for initializing face-api models -->
   <div id="loadingOverlay" class="loading-overlay">
-    <div class="spinner"></div>
-    <h3 style="font-weight: 600;">Mengunduh Model AI Wajah...</h3>
-    <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; max-width: 300px; text-align: center;">
+    <div class="spinner" id="loadingSpinner"></div>
+    <h3 id="loadingOverlayTitle" style="font-weight: 600;">Mengunduh Model AI Wajah...</h3>
+    <p id="loadingOverlayText" style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; max-width: 300px; text-align: center;">
       Proses ini memakan waktu beberapa detik pada pembukaan pertama.
     </p>
+    <div id="loadingOverlayErrBox" style="display: none; margin-top: 12px; text-align: center;"></div>
   </div>
 
   <header
