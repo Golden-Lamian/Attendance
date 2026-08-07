@@ -1,6 +1,7 @@
 /**
  * Smart Attendance PWA - Client Logic
  * Menangani Scanner QR, Deteksi Wajah, Liveness Challenge (Senyuman), dan Antrean Offline
+ * Version: 2.0 - Fixed
  */
 
 // Konfigurasi Endpoint Google Apps Script Web App Anda
@@ -13,13 +14,13 @@ let faceMatcher = null;
 let html5QrcodeScanner = null;
 let scanStream = null;
 let regStream = null;
-let latestLiveDescriptor = null; // Deskriptor wajah live dari kamera (dikirim langsung ke server)
-let cachedOutletShifts = []; // Opsi shift jam kerja per outlet dari tab 'Outlet Schedule'
+let latestLiveDescriptor = null;
+let cachedOutletShifts = [];
 
 // Variabel Data dari Hasil Scan QR Code PC
 let scannedQRData = null;
 let isProcessingQRScan = false;
-let isRestartingScanner = false; // Guard agar tidak ada double-click race condition
+let isRestartingScanner = false;
 
 // Keadaan Liveness Check
 let blinkCount = 0;
@@ -33,234 +34,32 @@ let isAttendanceSubmitted = false;
 let isTugasLuarMode = false;
 let tugasLuarEventName = "";
 
-function openTugasLuarModal() {
-  try {
-    dbgLog("📌 openTugasLuarModal dipanggil - membuka modal Absen Tugas Luar");
-    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
-    const overlay = document.getElementById('tugasLuarOverlay');
-    const input = document.getElementById('tugasLuarEventName');
-    const errBox = document.getElementById('tugasLuarErrorBox');
-    if (input) input.value = '';
-    if (errBox) {
-      errBox.style.display = 'none';
-      errBox.innerText = '';
-    }
-    if (overlay) overlay.style.display = 'flex';
-    showDebugPanel(false);
-  } catch (err) {
-    console.error("Error saat membuka modal Tugas Luar:", err);
-    dbgLog("❌ Error openTugasLuarModal: " + (err.message || err.toString()));
-    showDebugPanel(true);
-  }
-}
-window.openTugasLuarModal = openTugasLuarModal;
+// Cache untuk NRP yang sudah diverifikasi
+let verifiedNRPCache = null;
+let isRestoringNRP = false;
 
-function closeTugasLuarModal() {
-  const overlay = document.getElementById('tugasLuarOverlay');
-  if (overlay) overlay.style.display = 'none';
-}
-window.closeTugasLuarModal = closeTugasLuarModal;
+// State untuk pending attendance
+let pendingAttendanceType = null;
+let pendingWorkingHour = "";
 
-async function startTugasLuarScan() {
-  dbgLog("▶ [Absen Tugas Luar] startTugasLuarScan dipanggil");
-  const errBox = document.getElementById('tugasLuarErrorBox');
-  if (errBox) { errBox.style.display = 'none'; errBox.innerText = ''; }
+// State untuk supervisor
+let cachedSupervisorPending = [];
+let isSupervisorRole = false;
+let currentUserProfile = null;
 
-  try {
-    // 1. Validasi input nama event
-    const input = document.getElementById('tugasLuarEventName');
-    const eventName = input ? input.value.trim() : '';
-    if (!eventName) {
-      const msg = "Harap masukkan Nama Event / Nama Kegiatan terlebih dahulu.";
-      dbgLog("⚠️ " + msg);
-      if (errBox) { errBox.style.display = 'block'; errBox.innerText = "⚠️ " + msg; }
-      alert(msg);
-      return;
-    }
+// Native scanner state
+let _nativeScannerStream = null;
+let _nativeScannerInterval = null;
+let _nativeScannerVideo = null;
 
-    // 2. Cek NRP terdaftar
-    let localNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
-    if (!localNRP) {
-      localNRP = await tryAutoRestoreNRP();
-    }
-    if (!localNRP) {
-      const nrpWarn = "NRP belum terdaftar di perangkat ini. Silakan daftarkan atau sinkronkan NRP terlebih dahulu.";
-      dbgLog("⚠️ " + nrpWarn);
-      alert("⚠️ " + nrpWarn);
-      closeTugasLuarModal();
-      openSyncOverlay();
-      return;
-    }
-    dbgLog(`👤 Registered NRP: ${localNRP}`);
-
-    // 3. Set mode tugas luar & data QR simulasi
-    isTugasLuarMode = true;
-    tugasLuarEventName = eventName;
-    dbgLog(`✅ Tugas Luar Event Name diset: "${eventName}"`);
-
-    scannedQRData = {
-      outlet: "EVENT_" + eventName.toUpperCase().replace(/\s+/g, '_'),
-      totp_token: "TUGAS_LUAR_TOKEN",
-      timestamp: Math.floor(Date.now() / 1000)
-    };
-    dbgLog(`📦 Simulated scannedQRData set: ${JSON.stringify(scannedQRData)}`);
-
-    // 4. Tutup modal dulu
-    closeTugasLuarModal();
-    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
-
-    // 5. Stop semua kamera secara bersih, lalu tunggu hardware release
-    dbgLog("⏳ Menghentikan semua kamera sebelum verifikasi wajah...");
-    await stopAllCameras();
-    await new Promise(r => setTimeout(r, 500));
-    dbgLog("✅ Kamera dihentikan, siap membuka kamera depan");
-
-    // 6. Pastikan viewScan aktif dan langsung ke Step 2
-    const vScan = document.getElementById('viewScan');
-    if (vScan && !vScan.classList.contains('active')) {
-      document.querySelectorAll('.view-screen').forEach(s => s.classList.remove('active'));
-      vScan.classList.add('active');
-    }
-
-    // 7. Mulai kamera verifikasi wajah (Step 2)
-    dbgLog("🎥 Memulai kamera verifikasi wajah (startLivenessCamera)...");
-    await startLivenessCamera();
-    dbgLog("✅ Kamera depan aktif — verifikasi wajah Tugas Luar dimulai!");
-
-  } catch (err) {
-    const errorMsg = "Gagal memulai Absen Tugas Luar: " + (err.message || err.toString());
-    console.error("Gagal memulai Absen Tugas Luar:", err);
-    dbgLog("❌ " + errorMsg + "\nStack: " + (err.stack || 'no stack'));
-    if (errBox) {
-      errBox.style.display = 'block';
-      errBox.innerText = "❌ " + errorMsg;
-    }
-    showDebugPanel(true);
-    alert(errorMsg);
-  }
-}
-window.startTugasLuarScan = startTugasLuarScan;
-
-/**
- * Helper untuk mendapatkan tanggal lokal (YYYY-MM-DD) sesuai zona waktu pengguna (bukan UTC)
- */
-function getTodayDateStr() {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-/**
- * Membersihkan status absensi lokal dari hari-hari sebelumnya di LocalStorage
- */
-function cleanupOldAttendanceStatus() {
-  try {
-    const todayDateStr = getTodayDateStr();
-    const prefix = 'attendance_status_';
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(prefix) && !key.endsWith('_' + todayDateStr)) {
-        localStorage.removeItem(key);
-      }
-    }
-  } catch (e) { }
-}
+// Scan failure counter
+let _scanFailCount = 0;
+let _scanFailTimer = null;
 
 // =========================================================================
 // DEBUG HELPERS
 // =========================================================================
 
-/**
- * Tampilkan panel debug di UI dengan snapshot semua state saat ini.
- */
-function showDebugPanel(forceOpen = true) {
-  const panel = document.getElementById('debugPanel');
-  if (!panel) return;
-  if (forceOpen) panel.style.display = 'flex';
-
-  const now = new Date().toLocaleTimeString('id-ID', { hour12: false });
-  const set = (id, text) => { const el = document.getElementById(id); if (el) el.innerText = text; };
-
-  set('dbgTimestamp', `⏱ Waktu klik: ${now}`);
-
-  // scannedQRData
-  if (scannedQRData) {
-    set('dbgScannedQR',
-      `📦 scannedQRData:\n  outlet    = ${scannedQRData.outlet}\n  timestamp = ${scannedQRData.timestamp}\n  totp_token= ${scannedQRData.totp_token}`);
-  } else {
-    set('dbgScannedQR', '📦 scannedQRData: null');
-  }
-
-  // NRP tersimpan
-  const nrp = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
-  set('dbgNRP', `👤 NRP tersimpan: ${nrp || '(tidak ada)'}`);
-
-  // Status Tugas Luar
-  set('dbgTugasLuarState', `📌 Tugas Luar Mode: ${isTugasLuarMode ? `AKTIF ("${tugasLuarEventName}")` : 'Non-Aktif'}`);
-
-  // Status AI Model
-  set('dbgModelsLoaded', `🤖 AI Models Loaded: ${isModelsLoaded}`);
-
-  // Status Internet
-  set('dbgOnlineStatus', `🌐 Sinyal Internet: ${navigator.onLine ? 'Online' : 'Offline'}`);
-
-  // Flag state
-  set('dbgIsProcessing', `🔒 isProcessingQRScan: ${isProcessingQRScan}`);
-  set('dbgIsRestarting', `🔄 isRestartingScanner: ${isRestartingScanner}`);
-
-  // State scanner html5QrcodeScanner
-  let scannerState = 'null (tidak ada instance)';
-  if (html5QrcodeScanner) {
-    try {
-      const s = html5QrcodeScanner.getState ? html5QrcodeScanner.getState() : '?';
-      const stateMap = { 1: 'NOT_STARTED', 2: 'SCANNING', 3: 'PAUSED' };
-      scannerState = `ada → state=${s} (${stateMap[s] || 'unknown'})`;
-    } catch (e) { scannerState = `ada → getState() error: ${e.message}`; }
-  }
-  set('dbgScannerState', `📷 html5QrcodeScanner: ${scannerState}`);
-
-  // Stream kamera
-  set('dbgCameraState',
-    `🎥 scanStream: ${scanStream ? `aktif (${scanStream.getTracks().length} track)` : 'null'}`);
-
-  // Elemen #reader
-  const readerEl = document.getElementById('reader');
-  set('dbgReaderEl',
-    `🗂 #reader children: ${readerEl ? readerEl.children.length : 'element not found'}`);
-
-  console.log('=== [DEBUG] State Snapshot ===');
-  console.log('scannedQRData:', scannedQRData);
-  console.log('NRP tersimpan:', nrp);
-  console.log('isTugasLuarMode:', isTugasLuarMode, tugasLuarEventName);
-  console.log('isModelsLoaded:', isModelsLoaded);
-  console.log('isProcessingQRScan:', isProcessingQRScan);
-  console.log('scanStream:', scanStream);
-}
-window.showDebugPanel = showDebugPanel;
-
-function closeDebugPanel() {
-  const panel = document.getElementById('debugPanel');
-  if (panel) panel.style.display = 'none';
-}
-window.closeDebugPanel = closeDebugPanel;
-
-function copyDebugLog() {
-  const logEl = document.getElementById('dbgLog');
-  if (logEl && logEl.innerText) {
-    navigator.clipboard.writeText(logEl.innerText).then(() => {
-      alert("Log debug berhasil disalin ke clipboard!");
-    }).catch(e => {
-      alert("Gagal menyalin log: " + e.message);
-    });
-  }
-}
-window.copyDebugLog = copyDebugLog;
-
-/**
- * Tambah baris log ke debug panel UI sekaligus ke console.
- */
 function dbgLog(msg) {
   const logEl = document.getElementById('dbgLog');
   if (logEl) {
@@ -275,18 +74,100 @@ function dbgLog(msg) {
   console.log(`[DBG] ${msg}`);
 }
 
-/**
- * Mendapatkan atau Membuat Device ID yang KONSTAN berbasis Hardware Fingerprint HP.
- * ID ini TIDAK BERUBAH meskipun cache/site data browser dihapus.
- */
+function showDebugPanel(forceOpen = true) {
+  const panel = document.getElementById('debugPanel');
+  if (!panel) return;
+  if (forceOpen) panel.style.display = 'flex';
+
+  const now = new Date().toLocaleTimeString('id-ID', { hour12: false });
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.innerText = text; };
+
+  set('dbgTimestamp', `⏱ Waktu klik: ${now}`);
+
+  if (scannedQRData) {
+    set('dbgScannedQR', `📦 scannedQRData:\n  outlet    = ${scannedQRData.outlet}\n  timestamp = ${scannedQRData.timestamp}\n  totp_token= ${scannedQRData.totp_token}`);
+  } else {
+    set('dbgScannedQR', '📦 scannedQRData: null');
+  }
+
+  const nrp = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
+  set('dbgNRP', `👤 NRP tersimpan: ${nrp || '(tidak ada)'}`);
+  set('dbgTugasLuarState', `📌 Tugas Luar Mode: ${isTugasLuarMode ? `AKTIF ("${tugasLuarEventName}")` : 'Non-Aktif'}`);
+  set('dbgModelsLoaded', `🤖 AI Models Loaded: ${isModelsLoaded}`);
+  set('dbgOnlineStatus', `🌐 Sinyal Internet: ${navigator.onLine ? 'Online' : 'Offline'}`);
+  set('dbgIsProcessing', `🔒 isProcessingQRScan: ${isProcessingQRScan}`);
+  set('dbgIsRestarting', `🔄 isRestartingScanner: ${isRestartingScanner}`);
+
+  let scannerState = 'null (tidak ada instance)';
+  if (html5QrcodeScanner) {
+    try {
+      const s = html5QrcodeScanner.getState ? html5QrcodeScanner.getState() : '?';
+      const stateMap = { 1: 'NOT_STARTED', 2: 'SCANNING', 3: 'PAUSED' };
+      scannerState = `ada → state=${s} (${stateMap[s] || 'unknown'})`;
+    } catch (e) { scannerState = `ada → getState() error: ${e.message}`; }
+  }
+  set('dbgScannerState', `📷 html5QrcodeScanner: ${scannerState}`);
+  set('dbgCameraState', `🎥 scanStream: ${scanStream ? `aktif (${scanStream.getTracks().length} track)` : 'null'}`);
+
+  const readerEl = document.getElementById('reader');
+  set('dbgReaderEl', `🗂 #reader children: ${readerEl ? readerEl.children.length : 'element not found'}`);
+
+  console.log('=== [DEBUG] State Snapshot ===');
+  console.log('scannedQRData:', scannedQRData);
+  console.log('NRP tersimpan:', nrp);
+  console.log('isTugasLuarMode:', isTugasLuarMode, tugasLuarEventName);
+  console.log('isModelsLoaded:', isModelsLoaded);
+  console.log('isProcessingQRScan:', isProcessingQRScan);
+  console.log('scanStream:', scanStream);
+}
+
+function closeDebugPanel() {
+  const panel = document.getElementById('debugPanel');
+  if (panel) panel.style.display = 'none';
+}
+
+function copyDebugLog() {
+  const logEl = document.getElementById('dbgLog');
+  if (logEl && logEl.innerText) {
+    navigator.clipboard.writeText(logEl.innerText).then(() => {
+      alert("Log debug berhasil disalin ke clipboard!");
+    }).catch(e => {
+      alert("Gagal menyalin log: " + e.message);
+    });
+  }
+}
+
+// =========================================================================
+// HELPER FUNCTIONS
+// =========================================================================
+
+function getTodayDateStr() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function cleanupOldAttendanceStatus() {
+  try {
+    const todayDateStr = getTodayDateStr();
+    const prefix = 'attendance_status_';
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(prefix) && !key.endsWith('_' + todayDateStr)) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch (e) { }
+}
+
 function getOrCreateDeviceId() {
   let deviceId = localStorage.getItem('attendance_device_id');
   if (deviceId && (deviceId.startsWith('DEV-FP-') || deviceId.startsWith('DEV-ID-'))) {
     return deviceId;
   }
 
-  // Buat Device ID Unik yang KONSTAN berbasis Hardware Fingerprint HP (Bukan random UUID)
-  // ID ini akan SELALU SAMA pada HP yang sama meskipun localStorage / cache browser dibersihkan
   try {
     const fpData = [
       navigator.userAgent || '',
@@ -312,9 +193,6 @@ function getOrCreateDeviceId() {
   return deviceId;
 }
 
-/**
- * Hash Canvas sederhana untuk fingerprinting GPU/Render Engine HP
- */
 function getCanvasFingerprint() {
   try {
     const canvas = document.createElement('canvas');
@@ -336,9 +214,6 @@ function getCanvasFingerprint() {
   }
 }
 
-/**
- * FNV-1a Hash 32-bit (Konversi string fingerprint ke ID hex 8 karakter yang unik & stabil)
- */
 function fnv1aHash(str) {
   let hash = 0x811c9dc5;
   for (let i = 0; i < str.length; i++) {
@@ -348,240 +223,198 @@ function fnv1aHash(str) {
   return (hash >>> 0).toString(16).toUpperCase().padStart(8, '0');
 }
 
-// Muat Model face-api.js saat halaman dibuka
-window.addEventListener('DOMContentLoaded', async () => {
-  cleanupOldAttendanceStatus();
-  setupNetworkMonitoring();
-  loadLocalRegistration();
-  updateOfflineBadge();
-  await identifyDeviceUser();
-  await loadFaceApiModels();
+function getCurrentTimeStr() {
+  const d = new Date();
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
+}
 
-  // Cek status unbind di background saat app dibuka HANYA jika ada request unbind pending
-  const pendingUnbindNRP = localStorage.getItem('attendance_pending_unbind_nrp');
-  if (pendingUnbindNRP && navigator.onLine) {
-    setTimeout(async () => {
-      const unbindStatus = await checkUnbindStatusFromServer(pendingUnbindNRP);
-      if (unbindStatus.status === 'PENDING') {
-        showUnbindPendingScreen(pendingUnbindNRP, unbindStatus.requested_at);
-      } else if (unbindStatus.status === 'APPROVED') {
-        await handleUnbindApproved(pendingUnbindNRP);
-      } else {
-        localStorage.removeItem('attendance_pending_unbind_nrp');
-      }
-    }, 2000);
+function parseWorkingHours(workingHourStr) {
+  if (!workingHourStr || typeof workingHourStr !== 'string') return null;
+  const match = workingHourStr.match(/(\d{1,2}[:\.]\d{2})\s*[-–—to]+\s*(\d{1,2}[:\.]\d{2})/i);
+  if (!match) return null;
+
+  const normalize = (t) => {
+    let [h, m] = t.replace('.', ':').split(':');
+    h = h.padStart(2, '0');
+    m = m.padStart(2, '0');
+    return `${h}:${m}`;
+  };
+
+  return {
+    start: normalize(match[1]),
+    end: normalize(match[2])
+  };
+}
+
+function checkShouldTriggerReasonModal(attendanceType, workingHourStr) {
+  const wh = parseWorkingHours(workingHourStr);
+  if (!wh) return false;
+  const nowTime = getCurrentTimeStr();
+
+  if (attendanceType === 'CLOCK_IN') {
+    return nowTime > wh.start;
+  } else if (attendanceType === 'CLOCK_OUT') {
+    return nowTime < wh.end;
   }
+  return false;
+}
 
-  // Cek jika halaman dibuka dari scan kamera bawaan HP (parameter URL)
-  const hasURLParams = checkURLParameters();
-  if (!hasURLParams && currentView === 'scan') {
-    // Hanya buka kamera scanner QR belakang jika BUKAN dari URL parameter
-    startQRScanner();
-  }
-});
-
-/**
- * Memeriksa jika ada parameter URL yang dikirim (misal jika di-scan lewat kamera bawaan HP)
- */
-function checkURLParameters() {
-  const urlParams = new URLSearchParams(window.location.search);
-  const outlet = urlParams.get('outlet') || urlParams.get('outlet_id');
-  const timestamp = urlParams.get('timestamp');
-  const totpToken = urlParams.get('totp_token');
-
-  if (outlet && timestamp && totpToken) {
-    scannedQRData = {
-      outlet: outlet,
-      timestamp: Number(timestamp),
-      totp_token: totpToken
+function showScanResult(message, type) {
+  const resultDiv = document.getElementById('scanResult');
+  if (resultDiv) {
+    resultDiv.innerHTML = message;
+    const typeMap = {
+      'success': 'feedback-success',
+      'error': 'feedback-error',
+      'warning': 'feedback-warning',
+      'info': 'feedback-info'
     };
-    console.log("Parameter URL terdeteksi dari kamera bawaan HP:", scannedQRData);
-    fetchOutletShifts(outlet);
-
-    // Bersihkan parameter query URL dari address bar agar tidak membingungkan saat navigasi/tab switch
-    try {
-      window.history.replaceState({}, '', window.location.pathname);
-    } catch (e) { }
-
-    // Pastikan user terdaftar di ponsel ini
-    let localNRP = localStorage.getItem('attendance_registered_nrp');
-    if (!localNRP) {
-      (async () => {
-        localNRP = await tryAutoRestoreNRP();
-        if (!localNRP) {
-          openSyncOverlay(); // Tampilkan overlay sinkronisasi profil wajah
-        } else {
-    })();
-    return true;
+    resultDiv.className = "feedback-message " + (typeMap[type] || 'feedback-info');
+    resultDiv.style.display = 'block';
   }
-  return false;
 }
 
-/**
- * Memantau Koneksi Jaringan
- */
-function setupNetworkMonitoring() {
-  const statusBanner = document.getElementById('statusBanner');
-  const statusText = document.getElementById('statusText');
+function showRegResult(message, type) {
+  const resultDiv = document.getElementById('regResult');
+  if (resultDiv) {
+    resultDiv.innerHTML = message;
+    const typeMap = {
+      'success': 'feedback-success',
+      'error': 'feedback-error',
+      'warning': 'feedback-warning',
+      'info': 'feedback-info'
+    };
+    resultDiv.className = "feedback-message " + (typeMap[type] || 'feedback-info');
+    resultDiv.style.display = 'block';
+  }
+}
 
-  function updateStatus() {
-    if (navigator.onLine) {
-      if (statusBanner) {
-        statusBanner.className = "status-banner online";
-        statusBanner.title = "Koneksi Cloud Online";
-      }
-      if (statusText) statusText.innerText = "Online";
-      syncOfflineQueue();
-    } else {
-      if (statusBanner) {
-        statusBanner.className = "status-banner offline";
-        statusBanner.title = "Offline - Absen disinkronisasi saat online";
-      }
-      if (statusText) statusText.innerText = "Offline";
+function showSyncResult(message, type) {
+  const resultDiv = document.getElementById('syncResult');
+  if (resultDiv) {
+    resultDiv.innerHTML = message;
+    const typeMap = {
+      'success': 'feedback-success',
+      'error': 'feedback-error',
+      'warning': 'feedback-warning',
+      'info': 'feedback-info'
+    };
+    resultDiv.className = "feedback-message " + (typeMap[type] || 'feedback-info');
+    resultDiv.style.display = 'block';
+  }
+}
+
+function showUnbindResult(message, type) {
+  const resultDiv = document.getElementById('unbindResult');
+  if (resultDiv) {
+    resultDiv.innerHTML = message;
+    const typeMap = {
+      'success': 'feedback-success',
+      'error': 'feedback-error',
+      'warning': 'feedback-warning',
+      'info': 'feedback-info'
+    };
+    resultDiv.className = "feedback-message " + (typeMap[type] || 'feedback-info');
+    resultDiv.style.display = 'block';
+  }
+}
+
+function saveLocalAttendanceStatus(nrp, attendanceType, workingHour = "") {
+  try {
+    const todayDateStr = getTodayDateStr();
+    const key = 'attendance_status_' + nrp + '_' + todayDateStr;
+    const current = JSON.parse(localStorage.getItem(key) || '{}');
+    localStorage.setItem(key, JSON.stringify({
+      hasClockIn: current.hasClockIn || (attendanceType === 'CLOCK_IN'),
+      lastType: attendanceType,
+      working_hour: workingHour || current.working_hour || ""
+    }));
+  } catch (e) { }
+}
+
+function saveTodayAttendanceStatus(nrp, statusObj) {
+  if (!nrp) return;
+  try {
+    const todayDateStr = getTodayDateStr();
+    const key = 'attendance_status_' + nrp + '_' + todayDateStr;
+    const current = JSON.parse(localStorage.getItem(key) || '{}');
+
+    const updated = {
+      ...current,
+      hasClockIn: (typeof statusObj.hasClockIn === 'boolean') ? statusObj.hasClockIn : (current.hasClockIn || false),
+      hasClockOut: (typeof statusObj.hasClockOut === 'boolean') ? statusObj.hasClockOut : (current.hasClockOut || false),
+      lastType: statusObj.lastType || current.lastType || (statusObj.hasClockIn ? 'CLOCK_IN' : null),
+      lastTime: statusObj.lastTime || current.lastTime || new Date().toISOString()
+    };
+
+    localStorage.setItem(key, JSON.stringify(updated));
+  } catch (e) {
+    console.warn("Gagal menyimpan status absensi hari ini:", e);
+  }
+}
+
+function updateOfflineBadge() {
+  const existingQueue = localStorage.getItem('offline_attendance_queue');
+  const badge = document.getElementById('offlineBadge');
+
+  if (existingQueue) {
+    const queue = JSON.parse(existingQueue);
+    if (queue.length > 0) {
+      badge.innerText = queue.length;
+      badge.style.display = 'inline-block';
+      return;
     }
   }
-
-  window.addEventListener('online', updateStatus);
-  window.addEventListener('offline', updateStatus);
-  updateStatus();
+  badge.style.display = 'none';
 }
 
-// Registrasi Service Worker untuk Caching Model AI & App Shell di HP
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').then(reg => {
-      console.log('Service Worker terdaftar di HP:', reg.scope);
-    }).catch(err => {
-      console.warn('Registrasi Service Worker gagal:', err);
+function closeBrowserTab() {
+  console.log("Mencoba menutup tab browser...");
+
+  try {
+    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
+    if (typeof closeUnbindOverlay === 'function') closeUnbindOverlay();
+    document.querySelectorAll('.overlay').forEach(overlay => {
+      overlay.style.display = 'none';
     });
-  });
-}
+  } catch (e) {
+    console.warn("Gagal menyembunyikan overlay:", e);
+  }
 
-/**
- * Muat Model AI Wajah (face-api.js) dari folder ./models/ lokal HP atau dari CacheStorage
- */
-async function loadFaceApiModels() {
-  const LOCAL_MODEL_URL = './models';
-  const CDN_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
-
-  console.log("Memuat model AI face-api...");
-
-  // 1. Coba muat dari folder ./models/ lokal proyek
   try {
-    await faceapi.nets.tinyFaceDetector.loadFromUri(LOCAL_MODEL_URL);
-    await faceapi.nets.faceLandmark68Net.loadFromUri(LOCAL_MODEL_URL);
-    await faceapi.nets.faceRecognitionNet.loadFromUri(LOCAL_MODEL_URL);
-
-    isModelsLoaded = true;
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    if (loadingOverlay) loadingOverlay.style.display = 'none';
-    console.log("Model AI wajah berhasil dimuat dari folder ./models/ lokal!");
-    return;
-  } catch (localErr) {
-    console.warn("Folder model ./models/ lokal tidak terdeteksi, mencoba CDN/CacheStorage HP...", localErr);
+    window.opener = null;
+    window.open('', '_self', '');
+    window.close();
+  } catch (e) {
+    console.log("Window close error:", e);
   }
 
-  // 2. Fallback: Muat dari CDN (otomatis tersimpan di CacheStorage HP lewat Service Worker)
-  try {
-    await faceapi.nets.tinyFaceDetector.loadFromUri(CDN_MODEL_URL);
-    await faceapi.nets.faceLandmark68Net.loadFromUri(CDN_MODEL_URL);
-    await faceapi.nets.faceRecognitionNet.loadFromUri(CDN_MODEL_URL);
-
-    isModelsLoaded = true;
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    if (loadingOverlay) loadingOverlay.style.display = 'none';
-    console.log("Model AI wajah berhasil dimuat dan tersimpan di cache HP!");
-  } catch (error) {
-    console.error("Gagal memuat model face-api.js:", error);
-    alert("Gagal memuat model AI. Pastikan perangkat Anda terhubung ke internet setidaknya satu kali untuk menyimpan model di HP.");
-  }
-}
-
-/**
- * Memuat data pendaftaran NRP yang tersimpan di LocalStorage (Tanpa menyimpan data wajah di HP)
- */
-function loadLocalRegistration() {
-  const localNRP = localStorage.getItem('attendance_registered_nrp');
-  localStorage.removeItem('attendance_registered_embeddings'); // Hapus data lama jika ada
-
-  if (localNRP) {
-    console.log("Data profil lokal ditemukan untuk NRP: " + localNRP);
-    return true;
-  }
-  return false;
-}
-
-/**
- * Berpindah Antar View Screen (Scan vs Registrasi)
- */
-async function switchView(viewName) {
-  if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
-  currentView = viewName;
-  document.querySelectorAll('.view-screen').forEach(s => s.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-
-  const activeBtnMap = { 'scan': 0, 'register': 1, 'am': 2 };
-  const activeBtnIndex = activeBtnMap[viewName] !== undefined ? activeBtnMap[viewName] : 0;
-  const tabBtns = document.querySelectorAll('.tab-btn');
-  if (tabBtns[activeBtnIndex]) tabBtns[activeBtnIndex].classList.add('active');
-
-  await stopAllCameras();
-
-  if (viewName === 'scan') {
-    scannedQRData = null;
-    isProcessingQRScan = false;
-    livenessPassed = false;
-    faceVerified = false;
-    baselineSmileRatio = null;
-    latestLiveDescriptor = null;
-
-    resetToScanStep1UI();
-
-    const vScan = document.getElementById('viewScan');
-    if (vScan) vScan.classList.add('active');
-
-    setTimeout(() => {
-      startQRScanner();
-    }, 500);
-  } else if (viewName === 'register') {
-    const vReg = document.getElementById('viewRegister');
-    if (vReg) vReg.classList.add('active');
-  } else if (viewName === 'am') {
-    const vAm = document.getElementById('viewAm');
-    if (vAm) vAm.classList.add('active');
-
-    const amSessionStr = localStorage.getItem('attendance_am_session');
-    const amLoginForm = document.getElementById('amLoginForm');
-    const amLoggedInArea = document.getElementById('amLoggedInArea');
-
-    if (amSessionStr) {
-      try {
-        const amSess = JSON.parse(amSessionStr);
-        if (amSess && amSess.name) {
-          if (amLoginForm) amLoginForm.style.display = 'none';
-          if (amLoggedInArea) amLoggedInArea.style.display = 'block';
-          const nameEl = document.getElementById('amLoggedInName');
-          if (nameEl) nameEl.innerText = `👋 Halo Area Manager, ${amSess.name}`;
-          submitAmLogin(amSess.name, amSess.pin, true);
-          return;
-        }
-      } catch (e) {}
+  setTimeout(() => {
+    const container = document.querySelector('.container') || document.body;
+    if (container) {
+      container.innerHTML = `
+        <div style="padding: 40px 20px; text-align: center; font-family: 'Outfit', sans-serif;">
+          <div style="width: 76px; height: 76px; background: rgba(16, 185, 129, 0.15); border: 2px solid #10b981; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2.3rem; margin: 0 auto 20px auto; box-shadow: 0 0 25px rgba(16, 185, 129, 0.3);">
+            ✓
+          </div>
+          <h2 style="font-size: 1.6rem; font-weight: 700; color: #ffffff; margin-bottom: 8px;">Absensi Berhasil!</h2>
+          <p style="color: #9ca3af; font-size: 0.9rem; margin-bottom: 24px; line-height: 1.5;">
+            Data kehadiran Anda telah berhasil tersimpan di server.
+          </p>
+          <button onclick="try{window.close();}catch(e){}" class="btn" style="background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; padding: 12px 24px; border-radius: 10px; font-weight: 600; width: 100%; cursor: pointer;">
+            Tutup Halaman
+          </button>
+        </div>`;
     }
-
-    if (amLoginForm) amLoginForm.style.display = 'flex';
-    if (amLoggedInArea) amLoggedInArea.style.display = 'none';
-    populateAmDropdown();
-  }
+  }, 200);
 }
-window.switchView = switchView;
 
 // =========================================================================
-// SCAN ABSENSI & LIVENESS DETECTION FLOW
+// CAMERA FUNCTIONS
 // =========================================================================
 
-/**
- * Membuka Stream Kamera secara Andal dengan Fallback Otomatis
- */
 async function openCameraStream(facingMode = "user") {
   const attempts = [
     { video: { facingMode: { ideal: facingMode } } },
@@ -600,7 +433,6 @@ async function openCameraStream(facingMode = "user") {
     } catch (err) {
       lastError = err;
       console.warn(`[DBG] openCameraStream attempt ${i + 1} failed (${err.name} - ${err.message}):`, err);
-      // Beri jeda 600ms antara setiap percobaan agar driver hardware OS rilis penuh
       await new Promise(r => setTimeout(r, 600));
     }
   }
@@ -608,10 +440,6 @@ async function openCameraStream(facingMode = "user") {
   throw lastError || new Error("Gagal mengaktifkan modul kamera HP.");
 }
 
-/**
- * Menghentikan seluruh stream kamera (QR Scanner, Kamera Liveness, Kamera Registrasi)
- * dan membebaskan hardware kamera secara bersih dari OS driver.
- */
 async function stopAllCameras() {
   // Hentikan native BarcodeDetector scanner jika aktif
   if (_nativeScannerInterval) {
@@ -672,7 +500,6 @@ async function stopAllCameras() {
     html5QrcodeScanner = null;
   }
 
-  // PAKSA bersihkan elemen #reader dari sisa DOM Html5Qrcode agar re-init selalu berhasil
   try {
     const readerEl = document.getElementById('reader');
     if (readerEl) {
@@ -685,7 +512,6 @@ async function stopAllCameras() {
     }
   } catch (e) { console.warn('[DBG] stopAllCameras: gagal bersihkan #reader', e); }
 
-  // Hentikan seluruh stream yang masih menempel pada elemen video di DOM
   try {
     const videoElements = document.querySelectorAll('video');
     videoElements.forEach(v => {
@@ -698,15 +524,178 @@ async function stopAllCameras() {
     });
   } catch (e) { }
 
-  // Beri jeda 500ms agar driver hardware kamera OS rilis penuh
   await new Promise(r => setTimeout(r, 500));
 }
 
-/**
- * Reset tampilan UI saja ke Langkah 1, tanpa menghapus scannedQRData.
- * Digunakan oleh startQRScanner() agar data QR yang sudah di-scan tidak hilang
- * jika kamera restart karena alasan lain.
- */
+function stopScanCamera() {
+  if (scanStream) {
+    try { scanStream.getTracks().forEach(track => track.stop()); } catch (e) { }
+    scanStream = null;
+  }
+}
+
+function stopRegistrationCamera() {
+  if (regStream) {
+    try { regStream.getTracks().forEach(track => track.stop()); } catch (e) { }
+    regStream = null;
+  }
+  const area = document.getElementById('registerCameraArea');
+  const btn = document.getElementById('btnStartReg');
+  const btnCapture = document.getElementById('btnCapturePhoto');
+  if (btnCapture) {
+    btnCapture.disabled = false;
+    btnCapture.classList.remove('btn-loading', 'btn-secondary');
+    btnCapture.className = 'btn';
+    btnCapture.removeAttribute('style');
+    btnCapture.style.display = 'block';
+    btnCapture.innerHTML = 'Ambil Foto';
+  }
+  if (area) area.style.display = 'none';
+  if (btn) btn.style.display = 'block';
+}
+// =========================================================================
+// FACE API MODELS
+// =========================================================================
+
+async function loadFaceApiModels() {
+  const LOCAL_MODEL_URL = './models';
+  const CDN_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
+
+  console.log("Memuat model AI face-api...");
+
+  try {
+    await faceapi.nets.tinyFaceDetector.loadFromUri(LOCAL_MODEL_URL);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(LOCAL_MODEL_URL);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(LOCAL_MODEL_URL);
+
+    isModelsLoaded = true;
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    if (loadingOverlay) loadingOverlay.style.display = 'none';
+    console.log("Model AI wajah berhasil dimuat dari folder ./models/ lokal!");
+    return;
+  } catch (localErr) {
+    console.warn("Folder model ./models/ lokal tidak terdeteksi, mencoba CDN/CacheStorage HP...", localErr);
+  }
+
+  try {
+    await faceapi.nets.tinyFaceDetector.loadFromUri(CDN_MODEL_URL);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(CDN_MODEL_URL);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(CDN_MODEL_URL);
+
+    isModelsLoaded = true;
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    if (loadingOverlay) loadingOverlay.style.display = 'none';
+    console.log("Model AI wajah berhasil dimuat dan tersimpan di cache HP!");
+  } catch (error) {
+    console.error("Gagal memuat model face-api.js:", error);
+    alert("Gagal memuat model AI. Pastikan perangkat Anda terhubung ke internet setidaknya satu kali untuk menyimpan model di HP.");
+  }
+}
+
+// =========================================================================
+// NRP AUTO-RESTORE (FIXED)
+// =========================================================================
+
+async function tryAutoRestoreNRP(forceRefresh = false) {
+  if (!forceRefresh && verifiedNRPCache) {
+    dbgLog('✅ Menggunakan cached NRP: ' + verifiedNRPCache);
+    return verifiedNRPCache;
+  }
+
+  if (isRestoringNRP) {
+    dbgLog('⏳ Auto-restore sedang berjalan, menunggu...');
+    let waitCount = 0;
+    while (isRestoringNRP && waitCount < 50) {
+      await new Promise(r => setTimeout(r, 100));
+      waitCount++;
+    }
+    return verifiedNRPCache || localStorage.getItem('attendance_registered_nrp') || null;
+  }
+
+  isRestoringNRP = true;
+
+  try {
+    dbgLog('🔍 Memulai tryAutoRestoreNRP (forceRefresh=' + forceRefresh + ')');
+
+    let activeNRP = localStorage.getItem('attendance_registered_nrp');
+    if (activeNRP) {
+      if (!forceRefresh && navigator.onLine) {
+        try {
+          const verifyUrl = `${GAS_URL}?action=verify_nrp&nrp=${encodeURIComponent(activeNRP)}`;
+          const resp = await fetch(verifyUrl, {
+            signal: AbortSignal.timeout(3000)
+          });
+          const data = await resp.json();
+          if (data && (data.status === 'success' || data.code === 200)) {
+            verifiedNRPCache = activeNRP;
+            dbgLog('✅ NRP dari localStorage valid: ' + activeNRP);
+            return activeNRP;
+          } else {
+            dbgLog('⚠️ NRP dari localStorage tidak valid di server, akan restore ulang');
+            localStorage.removeItem('attendance_registered_nrp');
+          }
+        } catch (e) {
+          dbgLog('⚠️ Gagal verifikasi NRP (offline/error), menggunakan cached: ' + activeNRP);
+          verifiedNRPCache = activeNRP;
+          return activeNRP;
+        }
+      } else {
+        verifiedNRPCache = activeNRP;
+        return activeNRP;
+      }
+    }
+
+    if (!navigator.onLine) {
+      dbgLog('⚠️ Offline, tidak bisa restore NRP');
+      return null;
+    }
+
+    const devId = getOrCreateDeviceId();
+    const url = `${GAS_URL}?action=get_user_by_device_id&device_id=${encodeURIComponent(devId)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (!resp.ok) {
+      throw new Error('HTTP ' + resp.status);
+    }
+
+    const resData = await resp.json();
+    const userInfo = (resData && resData.data && typeof resData.data === 'object')
+      ? resData.data
+      : ((resData && resData.message && typeof resData.message === 'object')
+        ? resData.message
+        : resData);
+
+    if (resData && (resData.status === 'success' || resData.code === 200) && userInfo && userInfo.nrp) {
+      activeNRP = userInfo.nrp;
+      localStorage.setItem('attendance_registered_nrp', activeNRP);
+      if (userInfo.name) localStorage.setItem('attendance_user_name', userInfo.name);
+      if (userInfo.position) localStorage.setItem('attendance_user_position', userInfo.position);
+      if (userInfo.outlet) localStorage.setItem('attendance_user_outlet', userInfo.outlet);
+      currentUserProfile = userInfo;
+      verifiedNRPCache = activeNRP;
+      dbgLog('✅ Auto-restore NRP berhasil: ' + activeNRP);
+      identifyDeviceUser();
+      return activeNRP;
+    } else {
+      dbgLog('⚠️ Auto-restore gagal: user tidak ditemukan');
+      return null;
+    }
+  } catch (e) {
+    dbgLog('❌ Auto-restore error: ' + (e.message || e.toString()));
+    return null;
+  } finally {
+    isRestoringNRP = false;
+  }
+}
+
+// =========================================================================
+// SCANNER FUNCTIONS
+// =========================================================================
+
 function resetToScanStep1UI() {
   const step1 = document.getElementById('scanStep1');
   const step2 = document.getElementById('scanStep2');
@@ -725,24 +714,18 @@ function resetToScanStep1UI() {
   faceVerified = false;
   baselineSmileRatio = null;
 
-  // Reset challenge text
   const challengeText = document.getElementById('challengeText');
   if (challengeText) {
     challengeText.style.display = 'none';
     challengeText.innerText = 'Memuat pendeteksi...';
   }
 
-  // Reset face guide
   const faceGuide = document.getElementById('faceGuide');
   if (faceGuide) {
     faceGuide.className = 'face-guide-oval';
   }
 }
 
-/**
- * Reset tampilan UI ke Langkah 1 BESERTA data QR (full reset).
- * Digunakan saat user membatalkan scan atau terjadi error yang memerlukan scan ulang dari awal.
- */
 function resetToScanStep1() {
   scannedQRData = null;
   isProcessingQRScan = false;
@@ -763,10 +746,607 @@ function resetToScanStep1() {
   if (result) result.style.display = 'none';
 }
 
-/**
- * Pindah ke Langkah 3: Pilih Menu Absensi (2x2 Grid)
- * Dipanggil setelah Verifikasi Wajah & Liveness Check berhasil pada Langkah 2
- */
+async function startQRScanner() {
+  console.log('[DBG] startQRScanner() dipanggil');
+  isProcessingQRScan = false;
+
+  try {
+    await stopAllCameras();
+    console.log('[DBG] startQRScanner: stopAllCameras selesai');
+  } catch (e) {
+    console.warn("Stop kamera error:", e);
+  }
+
+  resetToScanStep1UI();
+
+  const readerEl = document.getElementById('reader');
+  if (readerEl) {
+    readerEl.innerHTML = '';
+    console.log('[DBG] startQRScanner: #reader di-clear');
+  } else {
+    console.error('[DBG] startQRScanner: #reader TIDAK DITEMUKAN!');
+    return;
+  }
+
+  await new Promise(r => setTimeout(r, 100));
+
+  const hasBarcodeDetector = ('BarcodeDetector' in window);
+  const hasJsQR = (typeof jsQR !== 'undefined');
+
+  dbgLog(`🔬 Engine: BarcodeDetector=${hasBarcodeDetector ? '✅' : '❌'}, jsQR=${hasJsQR ? '✅' : '❌'}`);
+
+  if (hasBarcodeDetector) {
+    await _startNativeBarcodeScanner(readerEl);
+  } else if (hasJsQR) {
+    await _startJsQRScanner(readerEl);
+  } else {
+    await _startHtml5QrcodeScanner(readerEl);
+  }
+}
+
+async function _startNativeBarcodeScanner(containerEl) {
+  dbgLog('📷 Memulai Native BarcodeDetector scanner...');
+  try {
+    const detector = new BarcodeDetector({ formats: ['qr_code'] });
+
+    let stream = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+        break;
+      } catch (err) {
+        console.warn(`[DBG] Native scanner getUserMedia attempt ${attempt} (${err.name}):`, err);
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, 500));
+        } else {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        }
+      }
+    }
+    _nativeScannerStream = stream;
+
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:14px;';
+    video.srcObject = stream;
+    containerEl.appendChild(video);
+    _nativeScannerVideo = video;
+
+    await new Promise((resolve) => {
+      video.onloadedmetadata = resolve;
+      setTimeout(resolve, 2000);
+    });
+    await video.play().catch(e => console.warn('video.play() warning:', e));
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    dbgLog('✅ Kamera native aktif! Mulai scan QR...');
+
+    html5QrcodeScanner = {
+      getState: () => 2,
+      stop: async () => {
+        clearInterval(_nativeScannerInterval);
+        _nativeScannerInterval = null;
+        if (_nativeScannerStream) {
+          _nativeScannerStream.getTracks().forEach(t => t.stop());
+          _nativeScannerStream = null;
+        }
+        if (_nativeScannerVideo) {
+          _nativeScannerVideo.srcObject = null;
+          _nativeScannerVideo = null;
+        }
+        console.log('[DBG] Native scanner: stopped');
+      },
+      pause: (stopVideo) => {
+        clearInterval(_nativeScannerInterval);
+        _nativeScannerInterval = null;
+        if (stopVideo && _nativeScannerVideo) _nativeScannerVideo.pause();
+        console.log('[DBG] Native scanner: paused');
+      },
+      clear: () => {
+        if (containerEl) containerEl.innerHTML = '';
+      },
+      resume: () => {
+        if (_nativeScannerVideo) _nativeScannerVideo.play();
+        _nativeScannerInterval = setInterval(scanLoop, 125);
+      }
+    };
+
+    const scanLoop = async () => {
+      if (isProcessingQRScan) return;
+      if (!video.videoWidth || !video.videoHeight) return;
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+
+      try {
+        const barcodes = await detector.detect(canvas);
+        if (barcodes && barcodes.length > 0) {
+          const rawValue = barcodes[0].rawValue;
+          console.log('[DBG] QR detected by BarcodeDetector:', rawValue);
+          await onQRScanSuccess(rawValue, barcodes[0]);
+        }
+      } catch (e) { }
+    };
+
+    _nativeScannerInterval = setInterval(scanLoop, 125);
+
+  } catch (err) {
+    dbgLog(`❌ Native scanner error: ${err.message}`);
+    console.error('[DBG] _startNativeBarcodeScanner error:', err);
+    dbgLog('⬇️ Fallback ke Html5Qrcode...');
+    await _startHtml5QrcodeScanner(containerEl);
+  }
+}
+
+async function _startJsQRScanner(containerEl) {
+  dbgLog('⚡ Memulai jsQR Scanner (High-Precision Canvas Mode)...');
+  try {
+    let stream = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+        break;
+      } catch (err) {
+        console.warn(`[DBG] jsQR scanner getUserMedia attempt ${attempt} (${err.name}):`, err);
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, 500));
+        } else {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        }
+      }
+    }
+    _nativeScannerStream = stream;
+
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:14px;';
+    video.srcObject = stream;
+    containerEl.appendChild(video);
+    _nativeScannerVideo = video;
+
+    await new Promise((resolve) => {
+      video.onloadedmetadata = resolve;
+      setTimeout(resolve, 2000);
+    });
+    await video.play().catch(e => console.warn('video.play() warning:', e));
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    dbgLog('✅ Kamera jsQR aktif! Mulai scan QR layar PC...');
+
+    html5QrcodeScanner = {
+      getState: () => 2,
+      stop: async () => {
+        if (_nativeScannerInterval) clearInterval(_nativeScannerInterval);
+        _nativeScannerInterval = null;
+        if (_nativeScannerStream) {
+          _nativeScannerStream.getTracks().forEach(t => t.stop());
+          _nativeScannerStream = null;
+        }
+        if (_nativeScannerVideo) {
+          _nativeScannerVideo.srcObject = null;
+          _nativeScannerVideo = null;
+        }
+        console.log('[DBG] jsQR scanner: stopped');
+      },
+      pause: (stopVideo) => {
+        if (_nativeScannerInterval) clearInterval(_nativeScannerInterval);
+        _nativeScannerInterval = null;
+        if (stopVideo && _nativeScannerVideo) _nativeScannerVideo.pause();
+        console.log('[DBG] jsQR scanner: paused');
+      },
+      clear: () => {
+        if (containerEl) containerEl.innerHTML = '';
+      },
+      resume: () => {
+        if (_nativeScannerVideo) _nativeScannerVideo.play();
+        _nativeScannerInterval = setInterval(scanLoop, 100);
+      }
+    };
+
+    const scanLoop = async () => {
+      if (isProcessingQRScan) return;
+      if (!video.videoWidth || !video.videoHeight) return;
+
+      const scanWidth = Math.min(video.videoWidth, 800);
+      const scanHeight = Math.floor(video.videoHeight * (scanWidth / video.videoWidth));
+
+      canvas.width = scanWidth;
+      canvas.height = scanHeight;
+      ctx.drawImage(video, 0, 0, scanWidth, scanHeight);
+
+      const imageData = ctx.getImageData(0, 0, scanWidth, scanHeight);
+      const code = jsQR(imageData.data, imageData.width, imageData.height, {
+        inversionAttempts: "dontInvert"
+      });
+
+      if (code && code.data && code.data.trim() !== '') {
+        console.log('[DBG] QR code detected by jsQR:', code.data);
+        await onQRScanSuccess(code.data, code);
+      }
+    };
+
+    _nativeScannerInterval = setInterval(scanLoop, 100);
+
+  } catch (err) {
+    dbgLog(`❌ jsQR scanner error: ${err.message}`);
+    console.error('[DBG] _startJsQRScanner error:', err);
+    dbgLog('⬇️ Fallback ke Html5Qrcode (ZXing)...');
+    await _startHtml5QrcodeScanner(containerEl);
+  }
+}
+
+async function _startHtml5QrcodeScanner(containerEl) {
+  dbgLog('📷 Memulai Html5Qrcode (ZXing) scanner...');
+
+  const config = {
+    fps: 8,
+    aspectRatio: 4 / 3,
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+  };
+
+  try {
+    let cameraId = null;
+    try {
+      const devices = await Html5Qrcode.getCameras();
+      if (devices && devices.length > 0) {
+        const backCamera = devices.find(d =>
+          d.label.toLowerCase().includes('back') ||
+          d.label.toLowerCase().includes('rear') ||
+          d.label.toLowerCase().includes('environment') ||
+          d.label.toLowerCase().includes('0')
+        );
+        cameraId = backCamera ? backCamera.id : devices[devices.length - 1].id;
+      }
+    } catch (e) { console.warn("getCameras error:", e); }
+
+    html5QrcodeScanner = new Html5Qrcode("reader");
+
+    if (cameraId) {
+      await html5QrcodeScanner.start(cameraId, config, onQRScanSuccess, onQRScanFailure);
+    } else {
+      await html5QrcodeScanner.start({ facingMode: "environment" }, config, onQRScanSuccess, onQRScanFailure);
+    }
+    dbgLog('✅ Html5Qrcode (ZXing) aktif');
+  } catch (err1) {
+    console.warn("Gagal Html5Qrcode primary, mencoba fallback facingMode...", err1);
+    try {
+      await stopAllCameras();
+      await new Promise(r => setTimeout(r, 300));
+      const el = document.getElementById('reader');
+      if (el) el.innerHTML = '';
+      html5QrcodeScanner = new Html5Qrcode("reader");
+      await html5QrcodeScanner.start({ facingMode: "user" }, config, onQRScanSuccess, onQRScanFailure);
+      dbgLog('✅ Html5Qrcode fallback (facingMode user) aktif');
+    } catch (err2) {
+      console.error("Gagal total menyalakan kamera:", err2);
+      dbgLog(`❌ Gagal buka kamera: ${err2.message}`);
+      showScanResult("Gagal membuka kamera: " + (err2.message || err2.toString()), "error");
+    }
+  }
+}
+
+function onQRScanFailure(error) {
+  _scanFailCount++;
+  if (!_scanFailTimer) {
+    _scanFailTimer = setTimeout(() => {
+      dbgLog('🔄 Scan attempts: ' + _scanFailCount + ' (dalam 2 detik terakhir)');
+      const dbgScannerEl = document.getElementById('dbgScannerState');
+      if (dbgScannerEl) {
+        const stateText = html5QrcodeScanner ?
+          (html5QrcodeScanner.getState ? 'state=' + html5QrcodeScanner.getState() : 'ada') : 'null';
+        dbgScannerEl.innerText = '📷 scanner: ' + stateText + ' | scan attempts: ' + _scanFailCount;
+      }
+      _scanFailCount = 0;
+      _scanFailTimer = null;
+    }, 2000);
+  }
+}
+
+async function cancelScan() {
+  scannedQRData = null;
+  isProcessingQRScan = false;
+  livenessPassed = false;
+  faceVerified = false;
+  baselineSmileRatio = null;
+  latestLiveDescriptor = null;
+
+  try {
+    if (window.location.search) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  } catch (e) { }
+
+  const resultDiv = document.getElementById('scanResult');
+  if (resultDiv) {
+    resultDiv.style.display = 'none';
+    resultDiv.className = 'feedback-message';
+  }
+
+  await stopAllCameras();
+  resetToScanStep1UI();
+
+  setTimeout(() => {
+    startQRScanner();
+  }, 300);
+}
+
+// =========================================================================
+// QR SCAN SUCCESS HANDLER (FIXED)
+// =========================================================================
+
+async function onQRScanSuccess(decodedText, decodedResult) {
+  if (isProcessingQRScan) {
+    return;
+  }
+
+  dbgLog(`🔎 QR terdeteksi! (${decodedText.length} chars)`);
+  console.log("QR Code terdeteksi:", decodedText);
+
+  isProcessingQRScan = true;
+
+  try {
+    let outlet = null;
+    let timestamp = null;
+    let totpToken = null;
+
+    if (decodedText.includes("outlet=") && decodedText.includes("totp_token=")) {
+      let searchParams = null;
+      if (decodedText.startsWith("http://") || decodedText.startsWith("https://")) {
+        const url = new URL(decodedText);
+        searchParams = url.searchParams;
+      } else {
+        const queryString = decodedText.includes("?") ? decodedText.split("?")[1] : decodedText;
+        searchParams = new URLSearchParams(queryString);
+      }
+
+      outlet = searchParams.get('outlet') || searchParams.get('outlet_id');
+      timestamp = searchParams.get('timestamp');
+      totpToken = searchParams.get('totp_token');
+    } else {
+      try {
+        const json = JSON.parse(decodedText);
+        outlet = json.outlet || json.outlet_id;
+        timestamp = json.timestamp;
+        totpToken = json.totp_token;
+      } catch (e) {
+        console.warn("Bukan format JSON:", decodedText.substring(0, 80));
+      }
+    }
+
+    if (!outlet || !totpToken || !timestamp) {
+      throw new Error("Parameter QR Code tidak lengkap");
+    }
+
+    scannedQRData = {
+      outlet: outlet,
+      timestamp: Number(timestamp),
+      totp_token: totpToken
+    };
+
+    dbgLog(`📦 outlet=${outlet}, timestamp=${timestamp}, totp=${totpToken ? totpToken.substring(0, 8) + '...' : 'null'}`);
+    fetchOutletShifts(outlet);
+
+    if (html5QrcodeScanner) {
+      try {
+        html5QrcodeScanner.pause(true);
+        dbgLog('⏸ Scanner dijeda (pause)');
+      } catch (e) {
+        console.warn("Pause scanner warning:", e);
+      }
+    }
+
+    let activeNRP = localStorage.getItem('attendance_registered_nrp');
+
+    if (activeNRP) {
+      dbgLog('✅ NRP ditemukan di localStorage: ' + activeNRP);
+      verifiedNRPCache = activeNRP;
+    } else {
+      dbgLog('🔍 NRP tidak ada di localStorage, mencoba auto-restore...');
+      activeNRP = await tryAutoRestoreNRP(false);
+      if (activeNRP) {
+        dbgLog('✅ Auto-restore berhasil: ' + activeNRP);
+      } else {
+        dbgLog('❌ Auto-restore gagal, tidak ada NRP');
+      }
+    }
+
+    if (!activeNRP) {
+      dbgLog('⚠️ Tidak ada NRP, membuka overlay sync');
+      await stopAllCameras();
+      resetToScanStep1UI();
+      openSyncOverlay();
+      isProcessingQRScan = false;
+      return;
+    }
+
+    const pendingUnbindNRP = localStorage.getItem('attendance_pending_unbind_nrp');
+    if (pendingUnbindNRP) {
+      dbgLog('🔍 Mengecek status unbind pending...');
+      const unbindStatus = await checkUnbindStatusFromServer(pendingUnbindNRP);
+      if (unbindStatus.status === 'PENDING') {
+        showUnbindPendingScreen(pendingUnbindNRP, unbindStatus.requested_at);
+        isProcessingQRScan = false;
+        return;
+      } else if (unbindStatus.status === 'APPROVED') {
+        await handleUnbindApproved(pendingUnbindNRP);
+        isProcessingQRScan = false;
+        return;
+      } else {
+        localStorage.removeItem('attendance_pending_unbind_nrp');
+      }
+    }
+
+    dbgLog('✅ NRP valid: ' + activeNRP + ', lanjut ke Langkah 2');
+
+    setTimeout(async () => {
+      try {
+        await stopAllCameras();
+        dbgLog('✅ Kamera dihentikan, membuka kamera depan...');
+        await startLivenessCamera();
+        dbgLog('✅ Kamera depan aktif — Langkah 2 dimulai!');
+      } catch (err) {
+        console.error("Transisi ke Langkah 2 gagal:", err);
+        dbgLog('❌ Transisi gagal: ' + (err.message || err.toString()));
+        showScanResult("Gagal membuka kamera verifikasi: " + (err.message || err.toString()), "error");
+        resetToScanStep1UI();
+        isProcessingQRScan = false;
+        setTimeout(() => startQRScanner(), 1000);
+      }
+    }, 300);
+
+  } catch (error) {
+    isProcessingQRScan = false;
+    console.error("Format QR Code tidak valid:", error);
+    dbgLog('❌ QR gagal parse: ' + error.message);
+    showScanResult("Format QR Code tidak sesuai: " + error.message, "error");
+
+    setTimeout(() => {
+      if (html5QrcodeScanner) {
+        try { html5QrcodeScanner.resume(); } catch (e) { }
+      }
+      isProcessingQRScan = false;
+    }, 2000);
+  }
+}
+
+// =========================================================================
+// LIVENESS CAMERA
+// =========================================================================
+
+let smileFrameCount = 0;
+
+async function startLivenessCamera() {
+  livenessPassed = false;
+  baselineSmileRatio = null;
+  smileFrameCount = 0;
+
+  try {
+    await stopAllCameras();
+    await new Promise(r => setTimeout(r, 400));
+  } catch (e) { }
+
+  document.getElementById('scanStep1').style.display = 'none';
+  document.getElementById('scanStep2').style.display = 'block';
+  document.getElementById('challengeText').style.display = 'block';
+  document.getElementById('challengeText').innerText = "Mendeteksi wajah Anda...";
+
+  const video = document.getElementById('scanFaceVideo');
+
+  try {
+    scanStream = await openCameraStream("user");
+    video.srcObject = scanStream;
+
+    await video.play().catch(e => console.warn("Video play warning:", e));
+
+    video.onloadedmetadata = () => {
+      runLivenessLoop(video);
+    };
+    if (video.readyState >= 2) {
+      runLivenessLoop(video);
+    }
+  } catch (error) {
+    console.error("Gagal membuka kamera depan:", error);
+    showScanResult("Gagal mengakses kamera depan: " + (error.message || error.toString()) + ".<br><button onclick='startLivenessCamera()' class='btn' style='margin-top:10px; padding:8px 16px; font-size:0.85rem; width:auto; display:inline-block;'>🔄 Coba Buka Kamera Lagi</button>", "error");
+  }
+}
+
+async function runLivenessLoop(video) {
+  if (!scanStream) return;
+
+  const faceGuide = document.getElementById('faceGuide');
+  const challengeText = document.getElementById('challengeText');
+
+  const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+    .withFaceLandmarks()
+    .withFaceDescriptor();
+
+  if (detection) {
+    faceVerified = true;
+    latestLiveDescriptor = Array.from(detection.descriptor);
+    faceGuide.className = "face-guide-oval verified";
+
+    if (!livenessPassed) {
+      challengeText.innerText = "Tantangan: SILAKAN TERSENYUM! 😊";
+
+      const isSmileDetected = checkSmileLiveness(detection.landmarks);
+
+      if (isSmileDetected) {
+        livenessPassed = true;
+        challengeText.innerText = "Senyuman Terdeteksi! 😊";
+        stopScanCamera();
+        showScanStep3();
+        return;
+      }
+    }
+  } else {
+    faceVerified = false;
+    latestLiveDescriptor = null;
+    baselineSmileRatio = null;
+    smileFrameCount = 0;
+    faceGuide.className = "face-guide-oval";
+    challengeText.innerText = "Dekatkan wajah Anda ke kamera";
+  }
+
+  setTimeout(() => runLivenessLoop(video), 60);
+}
+
+function checkSmileLiveness(landmarks) {
+  const mouth = landmarks.getMouth();
+  const leftEye = landmarks.getLeftEye();
+  const rightEye = landmarks.getRightEye();
+
+  if (!mouth || mouth.length < 10 || !leftEye || !rightEye) return false;
+
+  const mouthWidth = Math.hypot(mouth[6].x - mouth[0].x, mouth[6].y - mouth[0].y);
+  const eyeWidth = Math.hypot(rightEye[3].x - leftEye[0].x, rightEye[3].y - leftEye[0].y);
+
+  if (eyeWidth === 0) return false;
+
+  const currentSmileRatio = mouthWidth / eyeWidth;
+
+  if (baselineSmileRatio === null) {
+    baselineSmileRatio = currentSmileRatio;
+    smileFrameCount = 0;
+    return false;
+  }
+
+  const ratioIncrease = (currentSmileRatio - baselineSmileRatio) / baselineSmileRatio;
+  const isSmiling = ratioIncrease >= 0.12 && currentSmileRatio > 0.50;
+
+  if (isSmiling) {
+    smileFrameCount++;
+  } else {
+    smileFrameCount = Math.max(0, smileFrameCount - 1);
+  }
+
+  return smileFrameCount >= 4;
+}
+
+// =========================================================================
+// SHOW STEP 3 - ATTENDANCE MENU
+// =========================================================================
+
 async function showScanStep3() {
   const step1 = document.getElementById('scanStep1');
   const step2 = document.getElementById('scanStep2');
@@ -779,13 +1359,11 @@ async function showScanStep3() {
   const localNRP = localStorage.getItem('attendance_registered_nrp') || '';
   const deviceId = getOrCreateDeviceId();
 
-  // Sinkronisasi status absensi real-time dari Google Sheets di background (non-blocking & safe)
   if (localNRP || deviceId) {
     const syncUrl = `${GAS_URL}?action=get_user_by_device_id&device_id=${encodeURIComponent(deviceId)}&nrp=${encodeURIComponent(localNRP)}`;
     fetch(syncUrl)
       .then(resp => resp.json())
       .then(resData => {
-        // Abaikan respon sinkronisasi jika absensi sudah berhasil dikirim
         if (isAttendanceSubmitted) return;
 
         const userInfo = (resData && resData.data && typeof resData.data === 'object') ? resData.data : resData;
@@ -802,12 +1380,10 @@ async function showScanStep3() {
       .catch(err => console.warn("Sinkronisasi absensi background error:", err));
   }
 
-  // Ambil daftar shift outlet dari server secara otomatis
   if (scannedQRData && (scannedQRData.outlet || scannedQRData.outlet_id)) {
     fetchOutletShifts(scannedQRData.outlet || scannedQRData.outlet_id);
   }
 
-  // Re-enable tombol-tombol menu
   const menuButtons = document.querySelectorAll('#scanStep3 .menu-card');
   menuButtons.forEach(btn => {
     btn.removeAttribute('disabled');
@@ -815,22 +1391,18 @@ async function showScanStep3() {
     btn.style.pointerEvents = 'auto';
   });
 
-  // Check supervisor role for the active user NRP
   if (localNRP) {
     checkSupervisorRoleForNRP(localNRP, false);
   }
 }
 
-/**
- * Mengunduh Opsi Shift Kerja untuk Outlet dari Tab 'Outlet Schedule'
- */
 async function fetchOutletShifts(outletName) {
   cachedOutletShifts = [];
   if (!outletName || !GAS_URL) return;
 
   const cleanOutlet = String(outletName).trim();
   const cacheKey = 'outlet_shifts_' + cleanOutlet.toLowerCase();
-  
+
   try {
     const stored = localStorage.getItem(cacheKey);
     if (stored) {
@@ -853,64 +1425,10 @@ async function fetchOutletShifts(outletName) {
   }
 }
 
-let pendingAttendanceType = null;
-let pendingWorkingHour = "";
+// =========================================================================
+// ATTENDANCE HANDLERS
+// =========================================================================
 
-/**
- * Helper untuk meng-parse jam kerja "HH:MM - HH:MM" dari string working_hour
- * Returns: { start: "08:00", end: "17:00" } atau null jika tidak dapat di-parse
- */
-function parseWorkingHours(workingHourStr) {
-  if (!workingHourStr || typeof workingHourStr !== 'string') return null;
-  const match = workingHourStr.match(/(\d{1,2}[:\.]\d{2})\s*[-–—to]+\s*(\d{1,2}[:\.]\d{2})/i);
-  if (!match) return null;
-
-  const normalize = (t) => {
-    let [h, m] = t.replace('.', ':').split(':');
-    h = h.padStart(2, '0');
-    m = m.padStart(2, '0');
-    return `${h}:${m}`;
-  };
-
-  return {
-    start: normalize(match[1]),
-    end: normalize(match[2])
-  };
-}
-
-/**
- * Helper untuk mendapatkan waktu lokal saat ini dalam format "HH:MM"
- */
-function getCurrentTimeStr() {
-  const d = new Date();
-  const h = String(d.getHours()).padStart(2, '0');
-  const m = String(d.getMinutes()).padStart(2, '0');
-  return `${h}:${m}`;
-}
-
-/**
- * Memeriksa apakah modal alasan perlu ditunjukkan:
- * - CLOCK_IN: HANYA jika jam skrg > start working_hour (Terlambat)
- * - CLOCK_OUT: HANYA jika jam skrg < end working_hour (Pulang Awal)
- */
-function checkShouldTriggerReasonModal(attendanceType, workingHourStr) {
-  const wh = parseWorkingHours(workingHourStr);
-  if (!wh) return false;
-
-  const nowTime = getCurrentTimeStr();
-
-  if (attendanceType === 'CLOCK_IN') {
-    return nowTime > wh.start;
-  } else if (attendanceType === 'CLOCK_OUT') {
-    return nowTime < wh.end;
-  }
-  return false;
-}
-
-/**
- * Menangani Klik Tombol Masuk Kerja (Clock In)
- * Jika terdapat pilihan shift per outlet, tampilkan dialog pemilihan shift.
- */
 async function handleClockInClick() {
   const localNRP = localStorage.getItem('attendance_registered_nrp') || 'Karyawan';
   const todayDateStr = getTodayDateStr();
@@ -927,7 +1445,6 @@ async function handleClockInClick() {
 
   const outletName = (scannedQRData && (scannedQRData.outlet || scannedQRData.outlet_id)) || '';
 
-  // Untuk Tugas Luar, tidak memerlukan fetch shift outlet dari server
   if (!isTugasLuarMode && (!cachedOutletShifts || cachedOutletShifts.length === 0) && outletName) {
     showScanResult("⏳ Memuat opsi shift jam kerja...", "info");
     await fetchOutletShifts(outletName);
@@ -940,9 +1457,6 @@ async function handleClockInClick() {
   }
 }
 
-/**
- * Menangani Klik Tombol Pulang Kerja (Clock Out)
- */
 function handleClockOutClick() {
   const localNRP = localStorage.getItem('attendance_registered_nrp') || 'Karyawan';
   const todayDateStr = getTodayDateStr();
@@ -978,9 +1492,6 @@ function handleClockOutClick() {
   }
 }
 
-/**
- * Membuka Modal Pemilihan Shift Kerja (Jadwal Outlet)
- */
 function openShiftOverlay() {
   const overlay = document.getElementById('shiftSelectOverlay');
   const outletText = document.getElementById('shiftOutletName');
@@ -1028,11 +1539,6 @@ function closeShiftOverlay() {
   if (overlay) overlay.style.display = 'none';
 }
 
-/**
- * Membuka Modal Pemilihan Kategori / Alasan Absen
- * @param {string} attendanceType - 'CLOCK_IN' atau 'CLOCK_OUT'
- * @param {string} selectedWorkingHour - Shift jam kerja yang telah dipilih
- */
 function openReasonOverlay(attendanceType, selectedWorkingHour = '') {
   pendingAttendanceType = attendanceType;
   pendingWorkingHour = selectedWorkingHour;
@@ -1093,800 +1599,16 @@ function closeReasonOverlay() {
   if (overlay) overlay.style.display = 'none';
 }
 
-/**
- * State untuk custom native scanner (BarcodeDetector)
- */
-let _nativeScannerStream = null;
-let _nativeScannerInterval = null;
-let _nativeScannerVideo = null;
+// =========================================================================
+// SUBMIT ATTENDANCE
+// =========================================================================
 
-/**
- * Menyalakan Kamera QR Code Reader di HP
- * Menggunakan BarcodeDetector native API (lebih handal untuk QR dari layar PC)
- * dengan fallback ke Html5Qrcode jika tidak tersedia
- */
-async function startQRScanner() {
-  console.log('[DBG] startQRScanner() dipanggil');
-  isProcessingQRScan = false;
-
-  try {
-    await stopAllCameras();
-    console.log('[DBG] startQRScanner: stopAllCameras selesai');
-  } catch (e) {
-    console.warn("Stop kamera error:", e);
-  }
-
-  resetToScanStep1UI();
-
-  // Bersihkan #reader
-  const readerEl = document.getElementById('reader');
-  if (readerEl) {
-    readerEl.innerHTML = '';
-    console.log('[DBG] startQRScanner: #reader di-clear');
-  } else {
-    console.error('[DBG] startQRScanner: #reader TIDAK DITEMUKAN!');
-    return;
-  }
-
-  // Beri waktu browser render
-  await new Promise(r => setTimeout(r, 100));
-
-  // Cek engine scanner yang tersedia: BarcodeDetector -> jsQR -> Html5Qrcode (ZXing)
-  const hasBarcodeDetector = ('BarcodeDetector' in window);
-  const hasJsQR = (typeof jsQR !== 'undefined');
-
-  dbgLog(`🔬 Engine: BarcodeDetector=${hasBarcodeDetector ? '✅' : '❌'}, jsQR=${hasJsQR ? '✅' : '❌'}`);
-  console.log('[DBG] Engines:', { BarcodeDetector: hasBarcodeDetector, jsQR: hasJsQR });
-
-  if (hasBarcodeDetector) {
-    await _startNativeBarcodeScanner(readerEl);
-  } else if (hasJsQR) {
-    await _startJsQRScanner(readerEl);
-  } else {
-    await _startHtml5QrcodeScanner(readerEl);
-  }
-}
-
-/**
- * Scanner menggunakan library jsQR (Direct Canvas Capture + Ultra-fast Decode)
- * Sangat presisi untuk membaca QR code dari layar monitor PC
- */
-async function _startJsQRScanner(containerEl) {
-  dbgLog('⚡ Memulai jsQR Scanner (High-Precision Canvas Mode)...');
-  try {
-    let stream = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          }
-        });
-        break;
-      } catch (err) {
-        console.warn(`[DBG] jsQR scanner getUserMedia attempt ${attempt} (${err.name}):`, err);
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, 500));
-        } else {
-          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        }
-      }
-    }
-    _nativeScannerStream = stream;
-
-    const video = document.createElement('video');
-    video.autoplay = true;
-    video.playsInline = true;
-    video.muted = true;
-    video.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:14px;';
-    video.srcObject = stream;
-    containerEl.appendChild(video);
-    _nativeScannerVideo = video;
-
-    await new Promise((resolve) => {
-      video.onloadedmetadata = resolve;
-      setTimeout(resolve, 2000);
-    });
-    await video.play().catch(e => console.warn('video.play() warning:', e));
-
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-    dbgLog('✅ Kamera jsQR aktif! Mulai scan QR layar PC...');
-    console.log('[DBG] jsQR scanner: video size', video.videoWidth, 'x', video.videoHeight);
-
-    html5QrcodeScanner = {
-      getState: () => 2,
-      stop: async () => {
-        if (_nativeScannerInterval) clearInterval(_nativeScannerInterval);
-        _nativeScannerInterval = null;
-        if (_nativeScannerStream) {
-          _nativeScannerStream.getTracks().forEach(t => t.stop());
-          _nativeScannerStream = null;
-        }
-        if (_nativeScannerVideo) {
-          _nativeScannerVideo.srcObject = null;
-          _nativeScannerVideo = null;
-        }
-        console.log('[DBG] jsQR scanner: stopped');
-      },
-      pause: (stopVideo) => {
-        if (_nativeScannerInterval) clearInterval(_nativeScannerInterval);
-        _nativeScannerInterval = null;
-        if (stopVideo && _nativeScannerVideo) _nativeScannerVideo.pause();
-        console.log('[DBG] jsQR scanner: paused');
-      },
-      clear: () => {
-        if (containerEl) containerEl.innerHTML = '';
-      }
-    };
-
-    let failCount = 0, failTimer = null;
-    _nativeScannerInterval = setInterval(async () => {
-      if (isProcessingQRScan) return;
-      if (!video.videoWidth || !video.videoHeight) return;
-
-      failCount++;
-      if (!failTimer) {
-        failTimer = setTimeout(() => {
-          dbgLog(`🔄 jsQR scan attempts: ${failCount} / 2 detik`);
-          const el = document.getElementById('dbgScannerState');
-          if (el) el.innerText = `⚡ jsQR scanner aktif | attempts: ${failCount}`;
-          failCount = 0; failTimer = null;
-        }, 2000);
-      }
-
-      // Gunakan resolusi optimal untuk jsQR performance
-      const scanWidth = Math.min(video.videoWidth, 800);
-      const scanHeight = Math.floor(video.videoHeight * (scanWidth / video.videoWidth));
-
-      canvas.width = scanWidth;
-      canvas.height = scanHeight;
-      ctx.drawImage(video, 0, 0, scanWidth, scanHeight);
-
-      const imageData = ctx.getImageData(0, 0, scanWidth, scanHeight);
-      const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: "dontInvert"
-      });
-
-      if (code && code.data && code.data.trim() !== '') {
-        console.log('[DBG] QR code detected by jsQR:', code.data);
-        await onQRScanSuccess(code.data, code);
-      }
-    }, 100);
-
-  } catch (err) {
-    dbgLog(`❌ jsQR scanner error: ${err.message}`);
-    console.error('[DBG] _startJsQRScanner error:', err);
-    dbgLog('⬇️ Fallback ke Html5Qrcode (ZXing)...');
-    await _startHtml5QrcodeScanner(containerEl);
-  }
-}
-
-/**
- * Scanner menggunakan native BarcodeDetector API (Chrome Android 83+)
- * Jauh lebih handal untuk QR code dari layar monitor PC
- */
-async function _startNativeBarcodeScanner(containerEl) {
-  dbgLog('📷 Memulai Native BarcodeDetector scanner...');
-  try {
-    const detector = new BarcodeDetector({ formats: ['qr_code'] });
-
-    let stream = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          }
-        });
-        break;
-      } catch (err) {
-        console.warn(`[DBG] Native scanner getUserMedia attempt ${attempt} (${err.name}):`, err);
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, 500));
-        } else {
-          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        }
-      }
-    }
-    _nativeScannerStream = stream;
-
-    // Buat elemen video untuk tampilan kamera
-    const video = document.createElement('video');
-    video.autoplay = true;
-    video.playsInline = true;
-    video.muted = true;
-    video.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:14px;';
-    video.srcObject = stream;
-    containerEl.appendChild(video);
-    _nativeScannerVideo = video;
-
-    // Tunggu video siap
-    await new Promise((resolve) => {
-      video.onloadedmetadata = resolve;
-      setTimeout(resolve, 2000); // timeout fallback
-    });
-    await video.play().catch(e => console.warn('video.play() warning:', e));
-
-    // Buat canvas tersembunyi untuk capture frame
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-    dbgLog('✅ Kamera native aktif! Mulai scan QR...');
-    console.log('[DBG] Native scanner: video size', video.videoWidth, 'x', video.videoHeight);
-
-    // Buat proxy object agar kompatibel dengan stopAllCameras()
-    html5QrcodeScanner = {
-      getState: () => 2, // 2 = SCANNING
-      stop: async () => {
-        clearInterval(_nativeScannerInterval);
-        _nativeScannerInterval = null;
-        if (_nativeScannerStream) {
-          _nativeScannerStream.getTracks().forEach(t => t.stop());
-          _nativeScannerStream = null;
-        }
-        if (_nativeScannerVideo) {
-          _nativeScannerVideo.srcObject = null;
-          _nativeScannerVideo = null;
-        }
-        console.log('[DBG] Native scanner: stopped');
-      },
-      pause: (stopVideo) => {
-        clearInterval(_nativeScannerInterval);
-        _nativeScannerInterval = null;
-        if (stopVideo && _nativeScannerVideo) _nativeScannerVideo.pause();
-        console.log('[DBG] Native scanner: paused');
-      },
-      clear: () => {
-        if (containerEl) containerEl.innerHTML = '';
-      }
-    };
-
-    // Loop scan setiap 125ms (~8fps)
-    let failCount = 0, failTimer = null;
-    _nativeScannerInterval = setInterval(async () => {
-      if (isProcessingQRScan) return;
-      if (!video.videoWidth || !video.videoHeight) return;
-
-      // Count failures untuk debug
-      failCount++;
-      if (!failTimer) {
-        failTimer = setTimeout(() => {
-          dbgLog(`🔄 Native scan attempts: ${failCount} / 2 detik`);
-          const el = document.getElementById('dbgScannerState');
-          if (el) el.innerText = `📷 native scanner aktif | attempts: ${failCount}`;
-          failCount = 0; failTimer = null;
-        }, 2000);
-      }
-
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0);
-
-      try {
-        const barcodes = await detector.detect(canvas);
-        if (barcodes && barcodes.length > 0) {
-          const rawValue = barcodes[0].rawValue;
-          console.log('[DBG] QR detected by BarcodeDetector:', rawValue);
-          await onQRScanSuccess(rawValue, barcodes[0]);
-        }
-      } catch (e) {
-        // Kegagalan deteksi adalah normal saat tidak ada QR di frame
-      }
-    }, 125);
-
-  } catch (err) {
-    dbgLog(`❌ Native scanner error: ${err.message}`);
-    console.error('[DBG] _startNativeBarcodeScanner error:', err);
-    // Fallback ke Html5Qrcode
-    dbgLog('⬇️ Fallback ke Html5Qrcode...');
-    await _startHtml5QrcodeScanner(containerEl);
-  }
-}
-
-/**
- * Scanner menggunakan Html5Qrcode (ZXing) — sebagai fallback
- */
-async function _startHtml5QrcodeScanner(containerEl) {
-  dbgLog('📷 Memulai Html5Qrcode (ZXing) scanner...');
-
-  const config = {
-    fps: 8,
-    aspectRatio: 4 / 3,
-    experimentalFeatures: { useBarCodeDetectorIfSupported: true }
-  };
-
-  try {
-    let cameraId = null;
-    try {
-      const devices = await Html5Qrcode.getCameras();
-      if (devices && devices.length > 0) {
-        const backCamera = devices.find(d =>
-          d.label.toLowerCase().includes('back') ||
-          d.label.toLowerCase().includes('rear') ||
-          d.label.toLowerCase().includes('environment') ||
-          d.label.toLowerCase().includes('0')
-        );
-        cameraId = backCamera ? backCamera.id : devices[devices.length - 1].id;
-      }
-    } catch (e) { console.warn("getCameras error:", e); }
-
-    html5QrcodeScanner = new Html5Qrcode("reader");
-
-    if (cameraId) {
-      await html5QrcodeScanner.start(cameraId, config, onQRScanSuccess, onQRScanFailure);
-    } else {
-      await html5QrcodeScanner.start({ facingMode: "environment" }, config, onQRScanSuccess, onQRScanFailure);
-    }
-    dbgLog('✅ Html5Qrcode (ZXing) aktif');
-    console.log("Kamera QR scanner aktif (Html5Qrcode).");
-  } catch (err1) {
-    console.warn("Gagal Html5Qrcode primary, mencoba fallback facingMode...", err1);
-    try {
-      await stopAllCameras();
-      await new Promise(r => setTimeout(r, 300));
-      const el = document.getElementById('reader');
-      if (el) el.innerHTML = '';
-      html5QrcodeScanner = new Html5Qrcode("reader");
-      await html5QrcodeScanner.start({ facingMode: "user" }, config, onQRScanSuccess, onQRScanFailure);
-      dbgLog('✅ Html5Qrcode fallback (facingMode user) aktif');
-    } catch (err2) {
-      console.error("Gagal total menyalakan kamera:", err2);
-      dbgLog(`❌ Gagal buka kamera: ${err2.message}`);
-      showScanResult("Gagal membuka kamera: " + (err2.message || err2.toString()), "error");
-    }
-  }
-}
-
-
-/**
- * Callback ketika QR Code berhasil di-scan
- */
-async function onQRScanSuccess(decodedText, decodedResult) {
-  // Cegah multiple scan dalam waktu bersamaan
-  if (isProcessingQRScan) {
-    return; // Silent return, sudah diproses
-  }
-
-  // Tampilkan QR terdeteksi di debug panel
-  dbgLog(`🔎 QR terdeteksi! (${decodedText.length} chars)`);
-  console.log("QR Code terdeteksi:", decodedText);
-
-  try {
-    let outlet = null;
-    let timestamp = null;
-    let totpToken = null;
-
-    // Parse QR Code
-    if (decodedText.includes("outlet=") && decodedText.includes("totp_token=")) {
-      let searchParams = null;
-      if (decodedText.startsWith("http://") || decodedText.startsWith("https://")) {
-        const url = new URL(decodedText);
-        searchParams = url.searchParams;
-      } else {
-        const queryString = decodedText.includes("?") ? decodedText.split("?")[1] : decodedText;
-        searchParams = new URLSearchParams(queryString);
-      }
-
-      outlet = searchParams.get('outlet') || searchParams.get('outlet_id');
-      timestamp = searchParams.get('timestamp');
-      totpToken = searchParams.get('totp_token');
-    } else {
-      // Fallback format JSON
-      try {
-        const json = JSON.parse(decodedText);
-        outlet = json.outlet || json.outlet_id;
-        timestamp = json.timestamp;
-        totpToken = json.totp_token;
-      } catch (e) {
-        console.warn("Bukan format JSON:", decodedText.substring(0, 80));
-      }
-    }
-
-    dbgLog(`📦 outlet=${outlet}, timestamp=${timestamp}, totp=${totpToken ? totpToken.substring(0, 8) + '...' : 'null'}`);
-
-    if (!outlet || !totpToken || !timestamp) {
-      throw new Error("Parameter QR Code tidak lengkap: outlet=" + outlet + " totp=" + totpToken + " ts=" + timestamp);
-    }
-
-    // Set flag processing
-    isProcessingQRScan = true;
-
-    scannedQRData = {
-      outlet: outlet,
-      timestamp: Number(timestamp),
-      totp_token: totpToken
-    };
-
-    fetchOutletShifts(outlet);
-
-    console.log("QR Code baru berhasil diproses:", scannedQRData);
-    dbgLog('✅ QR valid! Menjeda scanner...');
-
-    const localNRP = localStorage.getItem('attendance_registered_nrp');
-
-    // PENTING: Gunakan pause() bukan stop() dari dalam callback scanner!
-    // stop() di dalam callback menyebabkan DEADLOCK karena library sedang
-    // mengeksekusi loop scan-nya sendiri.
-    if (html5QrcodeScanner) {
-      try {
-        html5QrcodeScanner.pause(true); // pause = aman dipanggil dari callback
-        dbgLog('⏸ Scanner dijeda (pause)');
-      } catch (e) {
-        console.warn("Pause scanner warning:", e);
-      }
-    }
-
-    // Transisi ke Langkah 2 di event loop baru agar tidak konflik dengan callback scanner
-    dbgLog('⏳ Menunggu 300ms lalu transisi ke Langkah 2...');
-    setTimeout(async () => {
-      try {
-        await stopAllCameras(); // stop penuh dilakukan di sini, di luar callback
-        dbgLog('✅ Kamera dihentikan, membuka kamera depan...');
-
-        let activeNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
-        
-        // Penanganan iOS Safari / Isolated Webview / Storage Loss: Auto-restore NRP dari cloud jika localStorage kosong
-        if (!activeNRP) {
-          dbgLog('🔍 LocalStorage kosong, mencoba auto-restore NRP dari Device ID di cloud...');
-          activeNRP = await tryAutoRestoreNRP();
-        }
-
-        if (!activeNRP) {
-          openSyncOverlay();
-          isProcessingQRScan = false;
-          return;
-        }
-
-        // Cek status unbind HANYA jika perangkat ini memiliki request unbind pending
-        const pendingUnbindNRP = localStorage.getItem('attendance_pending_unbind_nrp');
-        if (pendingUnbindNRP) {
-          dbgLog('🔍 Mengecek status unbind pending untuk NRP: ' + pendingUnbindNRP);
-          const unbindStatus = await checkUnbindStatusFromServer(pendingUnbindNRP);
-          dbgLog('📋 Status unbind: ' + unbindStatus.status);
-
-          if (unbindStatus.status === 'PENDING') {
-            showUnbindPendingScreen(pendingUnbindNRP, unbindStatus.requested_at);
-            isProcessingQRScan = false;
-            return;
-          } else if (unbindStatus.status === 'APPROVED') {
-            await handleUnbindApproved(pendingUnbindNRP);
-            isProcessingQRScan = false;
-            return;
-          } else {
-            localStorage.removeItem('attendance_pending_unbind_nrp');
-          }
-        }
-
-        // Status normal / terdaftar: lanjut ke Kamera Depan
-        await startLivenessCamera();
-        dbgLog('✅ Kamera depan aktif — Langkah 2 dimulai!');
-      } catch (err) {
-        console.error("Transisi ke Langkah 2 gagal:", err);
-        dbgLog('❌ Transisi gagal: ' + (err.message || err.toString()));
-        showScanResult("Gagal membuka kamera verifikasi: " + (err.message || err.toString()), "error");
-        // Reset dan kembali ke Langkah 1
-        resetToScanStep1UI();
-        isProcessingQRScan = false;
-        setTimeout(() => startQRScanner(), 1000);
-      }
-    }, 300);
-
-
-  } catch (error) {
-    isProcessingQRScan = false;
-    console.error("Format QR Code tidak valid:", error);
-    dbgLog('❌ QR gagal parse: ' + error.message);
-    showScanResult("Format QR Code tidak sesuai: " + error.message, "error");
-
-    // Resume scanner agar bisa scan lagi
-    setTimeout(() => {
-      if (html5QrcodeScanner) {
-        try { html5QrcodeScanner.resume(); } catch (e) { }
-      }
-    }, 2000);
-  }
-}
-
-let _scanFailCount = 0;
-let _scanFailTimer = null;
-function onQRScanFailure(error) {
-  // Hitung scan attempt dan tampilkan di debug panel setiap 2 detik
-  _scanFailCount++;
-  if (!_scanFailTimer) {
-    _scanFailTimer = setTimeout(() => {
-      dbgLog('🔄 Scan attempts: ' + _scanFailCount + ' (dalam 2 detik terakhir)');
-      const dbgScannerEl = document.getElementById('dbgScannerState');
-      if (dbgScannerEl) {
-        const stateText = html5QrcodeScanner ?
-          (html5QrcodeScanner.getState ? 'state=' + html5QrcodeScanner.getState() : 'ada') : 'null';
-        dbgScannerEl.innerText = '📷 scanner: ' + stateText + ' | scan attempts: ' + _scanFailCount;
-      }
-      _scanFailCount = 0;
-      _scanFailTimer = null;
-    }, 2000);
-  }
-}
-
-async function cancelScan() {
-  // Reset semua state
-  scannedQRData = null;
-  isProcessingQRScan = false;
-  livenessPassed = false;
-  faceVerified = false;
-  baselineSmileRatio = null;
-  latestLiveDescriptor = null;
-
-  // Hapus parameter URL
-  try {
-    if (window.location.search) {
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  } catch (e) { }
-
-  // Sembunyikan result
-  const resultDiv = document.getElementById('scanResult');
-  if (resultDiv) {
-    resultDiv.style.display = 'none';
-    resultDiv.className = 'feedback-message';
-  }
-
-  // Stop semua kamera
-  await stopAllCameras();
-
-  // Reset UI ke Langkah 1
-  resetToScanStep1UI();
-
-  // Start ulang QR scanner dengan delay
-  setTimeout(() => {
-    startQRScanner();
-  }, 300);
-}
-
-/**
- * Memulai ulang scanner QR Code pada Langkah 1 (Atau langsung ke Langkah 2 jika data QR sudah ada)
- */
-async function restartQRScanner() {
-  // Tampilkan debug panel dengan snapshot state saat tombol diklik
-  showDebugPanel();
-
-  if (isRestartingScanner) {
-    dbgLog('❌ BLOCKED: isRestartingScanner=true, klik diabaikan');
-    return;
-  }
-  isRestartingScanner = true;
-  dbgLog('▶ Mulai proses restart...');
-
-  const btn = document.getElementById('btnRescanQR');
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '⏳ Memulai ulang...';
-  }
-
-  try {
-    // RESET semua state scan
-    scannedQRData = null;
-    isProcessingQRScan = false;
-    livenessPassed = false;
-    faceVerified = false;
-    baselineSmileRatio = null;
-    latestLiveDescriptor = null;
-    dbgLog('✅ State di-reset');
-
-    // Reset UI ke Langkah 1
-    resetToScanStep1UI();
-    dbgLog('✅ UI reset ke Langkah 1');
-
-    // Hapus parameter URL jika ada
-    try {
-      if (window.location.search) {
-        window.history.replaceState({}, '', window.location.pathname);
-      }
-    } catch (e) { }
-
-    // Sembunyikan result
-    const resultDiv = document.getElementById('scanResult');
-    if (resultDiv) {
-      resultDiv.style.display = 'none';
-      resultDiv.className = 'feedback-message';
-    }
-
-    // Hentikan semua kamera terlebih dahulu
-    dbgLog('⏳ Menghentikan semua kamera...');
-    await stopAllCameras();
-    dbgLog('✅ Semua kamera dihentikan');
-
-    // Beri jeda agar kamera benar-benar release
-    dbgLog('⏳ Menunggu 300ms release kamera...');
-    await new Promise(resolve => setTimeout(resolve, 300));
-
-    // Cek elemen #reader sebelum start
-    const readerCheck = document.getElementById('reader');
-    dbgLog(`📋 #reader saat ini: ${readerCheck ? `ada, ${readerCheck.children.length} children` : 'TIDAK ADA'}`);
-
-    // Mulai ulang QR scanner
-    dbgLog('⏳ Memanggil startQRScanner()...');
-    await startQRScanner();
-    dbgLog('✅ QR Scanner berhasil direstart!');
-    console.log("QR Scanner berhasil direstart");
-
-  } catch (error) {
-    const msg = error.message || error.toString();
-    dbgLog(`❌ ERROR: ${msg}`);
-    console.error("Error saat restart QR scanner:", error);
-    showScanResult("Gagal memulai ulang scanner: " + msg, "error");
-  } finally {
-    isRestartingScanner = false;
-    const btn2 = document.getElementById('btnRescanQR');
-    if (btn2) {
-      btn2.disabled = false;
-      btn2.innerHTML = `<svg style="width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2;" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Scan Ulang QR Code`;
-    }
-    dbgLog('🏁 Selesai. isRestartingScanner=false');
-  }
-}
-
-/**
- * Membuka kamera depan untuk Verifikasi Wajah & Liveness Check
- */
-let smileFrameCount = 0;
-
-/**
- * Membuka kamera depan untuk Verifikasi Wajah & Liveness Check
- */
-async function startLivenessCamera() {
-  livenessPassed = false;
-  baselineSmileRatio = null; // Reset baseline saat kamera terbuka
-  smileFrameCount = 0;
-
-  try { 
-    await stopAllCameras();
-    await new Promise(r => setTimeout(r, 400));
-  } catch (e) { }
-
-  document.getElementById('scanStep1').style.display = 'none';
-  document.getElementById('scanStep2').style.display = 'block';
-  document.getElementById('challengeText').style.display = 'block';
-  document.getElementById('challengeText').innerText = "Mendeteksi wajah Anda...";
-
-  const video = document.getElementById('scanFaceVideo');
-
-  try {
-    scanStream = await openCameraStream("user");
-    video.srcObject = scanStream;
-
-    await video.play().catch(e => console.warn("Video play warning:", e));
-
-    // Tunggu video dimuat sebelum memulai loop AI
-    video.onloadedmetadata = () => {
-      runLivenessLoop(video);
-    };
-    if (video.readyState >= 2) {
-      runLivenessLoop(video);
-    }
-  } catch (error) {
-    console.error("Gagal membuka kamera depan:", error);
-    showScanResult("Gagal mengakses kamera depan: " + (error.message || error.toString()) + ".<br><button onclick='startLivenessCamera()' class='btn' style='margin-top:10px; padding:8px 16px; font-size:0.85rem; width:auto; display:inline-block;'>🔄 Coba Buka Kamera Lagi</button>", "error");
-  }
-}
-
-function stopScanCamera() {
-  if (scanStream) {
-    try { scanStream.getTracks().forEach(track => track.stop()); } catch (e) { }
-    scanStream = null;
-  }
-}
-
-/**
- * Loop Pemrosesan Deteksi Wajah, Pencocokan Identitas, dan Deteksi Senyuman (Liveness)
- */
-async function runLivenessLoop(video) {
-  if (!scanStream) return; // Stop jika kamera dimatikan
-
-  const faceGuide = document.getElementById('faceGuide');
-  const challengeText = document.getElementById('challengeText');
-
-  // Deteksi wajah, landmarks 68 titik, dan deskriptor
-  const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-    .withFaceLandmarks()
-    .withFaceDescriptor();
-
-  if (detection) {
-    // 1. Deteksi Wajah Live (Bentuk Deskriptor Live untuk dikirim ke server)
-    faceVerified = true;
-    latestLiveDescriptor = Array.from(detection.descriptor);
-    faceGuide.className = "face-guide-oval verified";
-
-    // 2. Deteksi Liveness: Challenge Tersenyum (Dynamic Smile Detection)
-    if (!livenessPassed) {
-      challengeText.innerText = "Tantangan: SILAKAN TERSENYUM! 😊";
-
-      const isSmileDetected = checkSmileLiveness(detection.landmarks);
-
-      if (isSmileDetected) {
-        livenessPassed = true;
-        challengeText.innerText = "Senyuman Terdeteksi! 😊";
-        stopScanCamera();
-
-        // Pindah ke Langkah 3: Pilih Menu Absensi (2x2 Grid)
-        showScanStep3();
-        return;
-      }
-    }
-  } else {
-    faceVerified = false;
-    latestLiveDescriptor = null;
-    baselineSmileRatio = null;
-    smileFrameCount = 0;
-    faceGuide.className = "face-guide-oval";
-    challengeText.innerText = "Dekatkan wajah Anda ke kamera";
-  }
-
-  // Ulangi deteksi dalam 60ms
-  setTimeout(() => runLivenessLoop(video), 60);
-}
-
-/**
- * Menghitung dan Memverifikasi Senyuman Dinamis (Membandingkan dengan Wajah Netral)
- */
-function checkSmileLiveness(landmarks) {
-  const mouth = landmarks.getMouth();
-  const leftEye = landmarks.getLeftEye();
-  const rightEye = landmarks.getRightEye();
-
-  if (!mouth || mouth.length < 10 || !leftEye || !rightEye) return false;
-
-  // Jarak horizontal sudut bibir (kiri ke kanan)
-  const mouthWidth = Math.hypot(mouth[6].x - mouth[0].x, mouth[6].y - mouth[0].y);
-  // Jarak kedua mata (sebagai referensi skala wajah)
-  const eyeWidth = Math.hypot(rightEye[3].x - leftEye[0].x, rightEye[3].y - leftEye[0].y);
-
-  if (eyeWidth === 0) return false;
-
-  const currentSmileRatio = mouthWidth / eyeWidth;
-
-  // Tangkap rasio wajah netral saat pertama kali terdeteksi di oval
-  if (baselineSmileRatio === null) {
-    baselineSmileRatio = currentSmileRatio;
-    smileFrameCount = 0;
-    return false;
-  }
-
-  // Persentase pelebaran bibir dibanding baseline netral
-  const ratioIncrease = (currentSmileRatio - baselineSmileRatio) / baselineSmileRatio;
-
-  // Deteksi senyum dinamis valid: pelebaran bibir setidaknya 12% dibanding baseline netral & rasio absolut > 0.50
-  const isSmiling = ratioIncrease >= 0.12 && currentSmileRatio > 0.50;
-
-  if (isSmiling) {
-    smileFrameCount++;
-  } else {
-    // Jika senyuman menghilang saat belum mencapai ambang batas, kurangi hitungan secara bertahap
-    smileFrameCount = Math.max(0, smileFrameCount - 1);
-  }
-
-  // Wajib tersenyum nyata secara dinamis & stabil minimal 4 frame berturut-turut
-  return smileFrameCount >= 4;
-}
-
-/**
- * Memproses Pengiriman Data Kehadiran (Online / Masuk Antrean Offline)
- * @param {string} attendanceType - "CLOCK_IN" | "START_BREAK" | "STOP_BREAK" | "CLOCK_OUT"
- * @param {string} selectedWorkingHour - Opsi Jam Kerja dari Outlet Schedule (contoh: "08:00 - 17:00")
- * @param {string} selectedReason - Kategori / Alasan Absen (contoh: "Izin Terlambat", "Lupa Absen", "Pulang Awal")
- */
 function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "", selectedReason = "") {
   const localNRP = localStorage.getItem('attendance_registered_nrp') || 'Karyawan';
   const challengeText = document.getElementById('challengeText');
 
   isAttendanceSubmitted = true;
 
-  // Disable menu buttons in step 3 to prevent multiple clicks
   const menuButtons = document.querySelectorAll('#scanStep3 .menu-card');
   menuButtons.forEach(btn => {
     btn.setAttribute('disabled', 'true');
@@ -1904,7 +1626,6 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
     return;
   }
 
-  // Pre-validasi aturan absensi secara lokal
   const todayDateStr = getTodayDateStr();
   const localStatusKey = 'attendance_status_' + localNRP + '_' + todayDateStr;
   let localStatus = {};
@@ -1952,6 +1673,7 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
       btn.style.opacity = '1';
       btn.style.pointerEvents = 'auto';
     });
+    isAttendanceSubmitted = false;
     return;
   }
 
@@ -1981,10 +1703,9 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
     else if (attendanceType === "STOP_BREAK" || attendanceType === "END_BREAK") typeLabel = "Stop Break";
     else if (attendanceType === "CLOCK_OUT") typeLabel = "Clock Out";
 
-    const reasonSelect = document.getElementById("attendanceReasonSelect");
     const activeReason = (typeof selectedReason === 'string' && selectedReason !== '')
       ? selectedReason
-      : (reasonSelect ? reasonSelect.value.trim() : "");
+      : "";
 
     let approvalTag = "";
     if (activeReason) {
@@ -2037,7 +1758,6 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
     tugasLuarEventName = "";
   }
 
-  // Ambil lokasi GPS HP dengan validasi presisi tinggi (dilengkapi fallback standar)
   if (navigator.geolocation) {
     dbgLog("📍 Meminta lokasi GPS HP (High Accuracy)...");
     navigator.geolocation.getCurrentPosition(
@@ -2077,49 +1797,6 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
   }
 }
 
-/**
- * Menyimpan status absensi lokal untuk NRP pengguna pada hari ini
- */
-function saveLocalAttendanceStatus(nrp, attendanceType, workingHour = "") {
-  try {
-    const todayDateStr = getTodayDateStr();
-    const key = 'attendance_status_' + nrp + '_' + todayDateStr;
-    const current = JSON.parse(localStorage.getItem(key) || '{}');
-    localStorage.setItem(key, JSON.stringify({
-      hasClockIn: current.hasClockIn || (attendanceType === 'CLOCK_IN'),
-      lastType: attendanceType,
-      working_hour: workingHour || current.working_hour || ""
-    }));
-  } catch (e) { }
-}
-
-/**
- * Menyimpan status absensi cloud hari ini ke localStorage pengguna
- */
-function saveTodayAttendanceStatus(nrp, statusObj) {
-  if (!nrp) return;
-  try {
-    const todayDateStr = getTodayDateStr();
-    const key = 'attendance_status_' + nrp + '_' + todayDateStr;
-    const current = JSON.parse(localStorage.getItem(key) || '{}');
-    
-    const updated = {
-      ...current,
-      hasClockIn: (typeof statusObj.hasClockIn === 'boolean') ? statusObj.hasClockIn : (current.hasClockIn || false),
-      hasClockOut: (typeof statusObj.hasClockOut === 'boolean') ? statusObj.hasClockOut : (current.hasClockOut || false),
-      lastType: statusObj.lastType || current.lastType || (statusObj.hasClockIn ? 'CLOCK_IN' : null),
-      lastTime: statusObj.lastTime || current.lastTime || new Date().toISOString()
-    };
-    
-    localStorage.setItem(key, JSON.stringify(updated));
-  } catch (e) {
-    console.warn("Gagal menyimpan status absensi hari ini:", e);
-  }
-}
-
-/**
- * Mengirim data langsung ke Google Apps Script Web App
- */
 async function sendToGAS(payload) {
   const challengeText = document.getElementById('challengeText');
   try {
@@ -2127,7 +1804,6 @@ async function sendToGAS(payload) {
     if (challengeText) challengeText.innerText = "📤 Mengirim absensi ke server...";
     showScanResult("Mengirim data ke server Google Sheets...", "success");
 
-    // Kirim POST tanpa no-cors untuk membaca balasan JSON resmi dari Google Apps Script
     const response = await fetch(GAS_URL, {
       method: "POST",
       headers: {
@@ -2155,7 +1831,6 @@ async function sendToGAS(payload) {
 
       const msgLower = (resData.message || "").toLowerCase();
 
-      // Memecahkan kebuntuan/deadlock jika cache browser sempat dihapus:
       if (msgLower.includes("sudah") && (msgLower.includes("clock in") || msgLower.includes("masuk kerja"))) {
         saveLocalAttendanceStatus(payload.nrp, "CLOCK_IN", payload.working_hour || "");
       }
@@ -2178,7 +1853,6 @@ async function sendToGAS(payload) {
     dbgLog("✅ Absensi Berhasil Diterima Server GAS");
     saveLocalAttendanceStatus(payload.nrp, payload.attendance_type, payload.working_hour);
 
-    // Broadcast event absensi ke outlet_display.html (Auto Refresh Setelah Clock In)
     try {
       localStorage.setItem('attendance_last_event', JSON.stringify({ type: payload.attendance_type, nrp: payload.nrp, timestamp: Date.now() }));
       if ('BroadcastChannel' in window) {
@@ -2192,7 +1866,6 @@ async function sendToGAS(payload) {
     if (challengeText) challengeText.innerText = "✅ " + successMsg;
     showScanResult("✅ " + successMsg, "success");
 
-    // Berikan jeda 1.2 detik untuk konfirmasi visual, lalu langsung jalankan penutupan tab
     setTimeout(() => {
       closeBrowserTab();
     }, 1200);
@@ -2205,59 +1878,10 @@ async function sendToGAS(payload) {
   }
 }
 
-/**
- * Mencoba menutup tab/jendela browser setelah absensi selesai
- */
-function closeBrowserTab() {
-  console.log("Mencoba menutup tab browser...");
-  
-  // Sembunyikan & tutup semua modal overlay agar tidak menghalangi layar sukses
-  try {
-    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
-    if (typeof closeUnbindOverlay === 'function') closeUnbindOverlay();
-    document.querySelectorAll('.overlay').forEach(overlay => {
-      overlay.style.display = 'none';
-    });
-  } catch (e) {
-    console.warn("Gagal menyembunyikan overlay:", e);
-  }
-
-  try {
-    window.opener = null;
-    window.open('', '_self', '');
-    window.close();
-  } catch (e) {
-    console.log("Window close error:", e);
-  }
-
-  // Tampilkan layar sukses jika browser memblokir window.close()
-  setTimeout(() => {
-    const container = document.querySelector('.container') || document.body;
-    if (container) {
-      container.innerHTML = `
-        <div style="padding: 40px 20px; text-align: center; font-family: 'Outfit', sans-serif;">
-          <div style="width: 76px; height: 76px; background: rgba(16, 185, 129, 0.15); border: 2px solid #10b981; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2.3rem; margin: 0 auto 20px auto; box-shadow: 0 0 25px rgba(16, 185, 129, 0.3);">
-            ✓
-          </div>
-          <h2 style="font-size: 1.6rem; font-weight: 700; color: #ffffff; margin-bottom: 8px;">Absensi Berhasil!</h2>
-          <p style="color: #9ca3af; font-size: 0.9rem; margin-bottom: 24px; line-height: 1.5;">
-            Data kehadiran Anda telah berhasil tersimpan di server.
-          </p>
-          <button onclick="try{window.close();}catch(e){}" class="btn" style="background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; padding: 12px 24px; border-radius: 10px; font-weight: 600; width: 100%; cursor: pointer;">
-            Tutup Halaman
-          </button>
-        </div>`;
-    }
-  }, 200);
-}
-
 // =========================================================================
-// OFFLINE QUEUE SYSTEM (Penanganan Sinyal Buruk)
+// OFFLINE QUEUE
 // =========================================================================
 
-/**
- * Memasukkan rekaman absensi ke antrean lokal HP
- */
 function enqueueOfflineRecord(payload) {
   let queue = [];
   const existingQueue = localStorage.getItem('offline_attendance_queue');
@@ -2265,10 +1889,8 @@ function enqueueOfflineRecord(payload) {
     queue = JSON.parse(existingQueue);
   }
 
-  // Tag payload dengan flag khusus antrean offline untuk diproses dengan grace window oleh server GAS
   payload.is_offline_queued = true;
 
-  // Hindari duplikasi antrean yang sama persis (NRP + timestamp)
   const isDuplicate = queue.some(item => item.nrp === payload.nrp && item.timestamp === payload.timestamp);
   if (!isDuplicate) {
     queue.push(payload);
@@ -2285,9 +1907,6 @@ function enqueueOfflineRecord(payload) {
   }, 3500);
 }
 
-/**
- * Menyinkronkan semua data absensi offline di antrean lokal ke Google Sheets
- */
 async function syncOfflineQueue() {
   const existingQueue = localStorage.getItem('offline_attendance_queue');
   if (!existingQueue) return;
@@ -2310,7 +1929,7 @@ async function syncOfflineQueue() {
       successCount++;
     } catch (err) {
       console.error("Gagal menyinkronkan rekaman index " + i + ":", err);
-      break; // Stop loop jika jaringan mati lagi
+      break;
     }
   }
 
@@ -2322,376 +1941,185 @@ async function syncOfflineQueue() {
   }
 }
 
-function updateOfflineBadge() {
-  const existingQueue = localStorage.getItem('offline_attendance_queue');
-  const badge = document.getElementById('offlineBadge');
+function setupNetworkMonitoring() {
+  const statusBanner = document.getElementById('statusBanner');
+  const statusText = document.getElementById('statusText');
 
-  if (existingQueue) {
-    const queue = JSON.parse(existingQueue);
-    if (queue.length > 0) {
-      badge.innerText = queue.length;
-      badge.style.display = 'inline-block';
-      return;
-    }
-  }
-  badge.style.display = 'none';
-}
-
-function showScanResult(message, type) {
-  const resultDiv = document.getElementById('scanResult');
-  if (resultDiv) {
-    resultDiv.innerHTML = message;
-    resultDiv.className = "feedback-message " + (type === 'success' ? 'feedback-success' : type === 'warning' ? 'feedback-success' : 'feedback-error');
-    resultDiv.style.display = 'block';
-  }
-
-  if (type === 'warning') {
-    resultDiv.style.borderColor = 'var(--warning)';
-    resultDiv.style.color = 'var(--warning)';
-  }
-}
-
-// =========================================================================
-// REGISTRASI KARYAWAN FLOW
-// =========================================================================
-
-async function startRegistrationFlow() {
-  const nrpInput = document.getElementById('regNRP');
-  const nrp = nrpInput ? nrpInput.value.trim() : '';
-
-  if (!nrp) {
-    showRegResult("Harap isi NRP Anda sebelum memulai registrasi wajah.", "error");
-    return;
-  }
-
-  showRegResult("⏳ Membuka kamera depan...", "success");
-
-  try { 
-    await stopAllCameras();
-    await new Promise(r => setTimeout(r, 400));
-  } catch (e) { }
-
-  document.getElementById('btnStartReg').style.display = 'none';
-  document.getElementById('registerCameraArea').style.display = 'block';
-
-  const btnCapture = document.getElementById('btnCapturePhoto');
-  if (btnCapture) {
-    btnCapture.disabled = false;
-    btnCapture.style.display = 'block';
-    btnCapture.innerHTML = 'Ambil Foto';
-  }
-
-  const video = document.getElementById('regFaceVideo');
-
-  try {
-    regStream = await openCameraStream("user");
-    video.srcObject = regStream;
-    await video.play().catch(e => console.warn("Video play warning:", e));
-    const regRes = document.getElementById('regResult');
-    if (regRes) regRes.style.display = 'none';
-  } catch (error) {
-    console.error("Gagal membuka kamera registrasi:", error);
-    showRegResult("Gagal mengakses kamera: " + (error.message || error.toString()) + ".<br><button onclick='startRegistrationFlow()' class='btn' style='margin-top:10px; padding:8px 16px; font-size:0.85rem; width:auto; display:inline-block;'>🔄 Coba Buka Kamera Lagi</button>", "error");
-    stopRegistrationCamera();
-  }
-}
-
-function stopRegistrationCamera() {
-  if (regStream) {
-    try { regStream.getTracks().forEach(track => track.stop()); } catch (e) { }
-    regStream = null;
-  }
-  const area = document.getElementById('registerCameraArea');
-  const btn = document.getElementById('btnStartReg');
-  const btnCapture = document.getElementById('btnCapturePhoto');
-  if (btnCapture) {
-    btnCapture.disabled = false;
-    btnCapture.classList.remove('btn-loading', 'btn-secondary');
-    btnCapture.className = 'btn';
-    btnCapture.removeAttribute('style');
-    btnCapture.style.display = 'block';
-    btnCapture.innerHTML = 'Ambil Foto';
-  }
-  if (area) area.style.display = 'none';
-  if (btn) btn.style.display = 'block';
-}
-
-/**
- * Mengambil Sampel Embedding Wajah untuk NRP Karyawan
- */
-async function captureFaceEmbeddings(btnElement) {
-  const btnCapture = btnElement || document.getElementById('btnCapturePhoto');
-
-  function setButtonState(loading) {
-    if (btnCapture) {
-      btnCapture.disabled = loading;
-      if (loading) {
-        btnCapture.style.display = 'none';
-      } else {
-        btnCapture.classList.remove('btn-loading', 'btn-secondary');
-        btnCapture.removeAttribute('style');
-        btnCapture.className = 'btn';
-        btnCapture.style.display = 'block';
-        btnCapture.innerHTML = 'Ambil Foto';
+  function updateStatus() {
+    if (navigator.onLine) {
+      if (statusBanner) {
+        statusBanner.className = "status-banner online";
+        statusBanner.title = "Koneksi Cloud Online";
       }
-    }
-  }
-
-  // Langsung nonaktifkan tombol begitu diklik
-  setButtonState(true);
-
-  if (!isModelsLoaded) {
-    showRegResult("Model AI Wajah belum selesai diunduh. Mohon tunggu sejenak...", "error");
-    setTimeout(() => setButtonState(false), 1500);
-    return;
-  }
-
-  const video = document.getElementById('regFaceVideo');
-  const nrpInput = document.getElementById('regNRP');
-  const nrp = nrpInput ? nrpInput.value.trim() : '';
-
-  if (!nrp) {
-    showRegResult("Harap masukkan NRP Anda sebelum mendaftar.", "error");
-    setTimeout(() => setButtonState(false), 1500);
-    return;
-  }
-
-  // Jika video belum siap, tunggu hingga 600ms
-  if (!regStream || video.paused || video.ended || video.readyState < 2) {
-    console.warn("Menunggu video kamera siap...");
-    await new Promise(resolve => setTimeout(resolve, 600));
-  }
-
-  if (!regStream) {
-    showRegResult("Kamera belum aktif. Posisikan wajah Anda di dalam oval.", "error");
-    setTimeout(() => setButtonState(false), 1500);
-    return;
-  }
-
-  showRegResult("⏳ Memproses & memverifikasi registrasi di server cloud...", "success");
-
-  try {
-    // 1. Deteksi Wajah dengan opsi bertingkat
-    let detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.4 }))
-      .withFaceLandmarks()
-      .withFaceDescriptor();
-
-    if (!detection) {
-      // Fallback detektor dengan ambang batas lebih fleksibel
-      detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.3 }))
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-    }
-
-    if (detection) {
-      const embeddingArray = Array.from(detection.descriptor);
-      const deviceId = getOrCreateDeviceId();
-
-      // 2. Kirim registrasi wajah & Device ID ke server cloud Google Sheets DULU untuk validasi
-      const resData = await uploadFaceEmbeddingToCloud(nrp, embeddingArray, deviceId);
-
-      // 3. Jika server menolak registrasi (misal: Device sudah dipakai oleh NRP lain)
-      if (resData && resData.status === "error") {
-        console.warn("Registrasi ditolak server:", resData.message);
-        showRegResult("❌ Ditolak Server: " + resData.message, "error");
-        setTimeout(() => setButtonState(false), 2000);
-        return;
-      }
-
-      // 4. Jika server menyetujui, simpan NRP & Device ID ke LocalStorage HP
-      localStorage.setItem('attendance_registered_nrp', nrp);
-      localStorage.removeItem('attendance_registered_embeddings');
-      localStorage.setItem('attendance_registered_device_id', deviceId);
-
-      // Trigger pembaruan profil user header banner
-      identifyDeviceUser();
-
-      const serverMessage = resData && resData.message ? resData.message : ("Registrasi Wajah NRP " + nrp + " Berhasil!");
-      showRegResult("✅ " + serverMessage, "success");
-
-      setTimeout(() => {
-        setButtonState(false);
-        stopRegistrationCamera();
-        switchView('scan');
-      }, 3500);
-
+      if (statusText) statusText.innerText = "Online";
+      syncOfflineQueue();
     } else {
-      showRegResult("Wajah tidak terdeteksi. Posisikan wajah Anda tegak lurus dan pencahayaan terang di dalam oval panduan.", "error");
-      setTimeout(() => setButtonState(false), 2000);
+      if (statusBanner) {
+        statusBanner.className = "status-banner offline";
+        statusBanner.title = "Offline - Absen disinkronisasi saat online";
+      }
+      if (statusText) statusText.innerText = "Offline";
     }
-  } catch (err) {
-    console.error("Gagal memproses gambar dari kamera:", err);
-    showRegResult("Gagal memproses gambar dari kamera: " + (err.message || err.toString()), "error");
-    setTimeout(() => setButtonState(false), 2000);
   }
+
+  window.addEventListener('online', updateStatus);
+  window.addEventListener('offline', updateStatus);
+  updateStatus();
 }
 
-function showRegResult(message, type) {
-  const resultDiv = document.getElementById('regResult');
-  resultDiv.innerText = message;
-  resultDiv.className = "feedback-message " + (type === 'success' ? 'feedback-success' : 'feedback-error');
-  resultDiv.style.display = 'block';
-}
+// =========================================================================
+// TUGAS LUAR / EVENT MODAL (FIXED)
+// =========================================================================
 
-/**
- * Mengunggah data template wajah & Device ID ke cloud (Google Sheets tab Face_Embedding) setelah registrasi sukses
- */
-async function uploadFaceEmbeddingToCloud(nrp, embedding, deviceId) {
-  const activeDeviceId = deviceId || getOrCreateDeviceId();
-  if (!navigator.onLine) {
-    console.log("Registrasi wajah cloud ditunda (offline).");
-    return { status: "error", message: "Koneksi internet terputus. Mohon hubungkan ke internet untuk melakukan registrasi." };
-  }
+function openTugasLuarModal() {
   try {
-    const payload = {
-      action: "register_face",
-      nrp: nrp,
-      face_embedding: embedding,
-      device_id: activeDeviceId
-    };
+    dbgLog("📌 openTugasLuarModal dipanggil - membuka modal Absen Tugas Luar");
 
-    const response = await fetch(GAS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload)
+    const overlays = document.querySelectorAll('.overlay');
+    overlays.forEach(overlay => {
+      if (overlay.id !== 'tugasLuarOverlay') {
+        overlay.style.display = 'none';
+      }
     });
 
-    let resData = null;
-    try {
-      resData = await response.json();
-    } catch (e) {
-      console.log("Membaca respon JSON dari GAS register_face:", e);
+    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
+    if (typeof closeUnbindOverlay === 'function') closeUnbindOverlay();
+    if (typeof closeShiftOverlay === 'function') closeShiftOverlay();
+    if (typeof closeReasonOverlay === 'function') closeReasonOverlay();
+
+    const input = document.getElementById('tugasLuarEventName');
+    const errBox = document.getElementById('tugasLuarErrorBox');
+    if (input) input.value = '';
+    if (errBox) {
+      errBox.style.display = 'none';
+      errBox.innerText = '';
     }
 
-    if (resData && typeof resData === "object") {
-      return resData;
+    const overlay = document.getElementById('tugasLuarOverlay');
+    if (overlay) {
+      overlay.style.display = 'flex';
+      overlay.style.zIndex = '10001';
     }
-    return { status: "error", message: "Respon server tidak valid atau gagal diproses. Silakan coba lagi." };
+
+    isTugasLuarMode = false;
+    tugasLuarEventName = "";
+
+    dbgLog('✅ Modal Tugas Luar terbuka');
   } catch (err) {
-    console.error("Gagal mengunggah data wajah ke cloud:", err);
-    return { status: "error", message: "Gagal terhubung ke server cloud: " + err.toString() };
+    console.error("Error saat membuka modal Tugas Luar:", err);
+    dbgLog("❌ Error openTugasLuarModal: " + (err.message || err.toString()));
+    alert("Gagal membuka form Tugas Luar. Silakan refresh halaman dan coba lagi.\n\nError: " + err.message);
   }
 }
 
+function closeTugasLuarModal() {
+  const overlay = document.getElementById('tugasLuarOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
 
-/**
- * Menyinkronkan Profil Wajah Karyawan dari Cloud jika PWA dibuka di browser baru / setelah clear cache
- */
-async function syncFaceProfile(btnElement) {
-  const btnSync = btnElement || document.getElementById('btnSyncProfile');
-
-  function setSyncBtnState(loading) {
-    if (btnSync) {
-      btnSync.disabled = loading;
-      if (loading) {
-        btnSync.style.display = 'none';
-      } else {
-        btnSync.disabled = false;
-        btnSync.classList.remove('btn-secondary');
-        btnSync.removeAttribute('style');
-        btnSync.className = 'btn';
-        btnSync.style.display = 'block';
-        btnSync.style.marginBottom = '12px';
-        btnSync.innerHTML = 'Sinkronkan Perangkat';
-      }
-    }
+async function startTugasLuarScan() {
+  dbgLog("▶ [Absen Tugas Luar] startTugasLuarScan dipanggil");
+  const errBox = document.getElementById('tugasLuarErrorBox');
+  if (errBox) {
+    errBox.style.display = 'none';
+    errBox.innerText = '';
   }
-
-  // Langsung sembunyikan & nonaktifkan tombol begitu diklik (karakteristik persis Ambil Foto)
-  setSyncBtnState(true);
-
-  const syncNrpInput = document.getElementById('syncNRP');
-  const nrp = syncNrpInput ? syncNrpInput.value.trim() : '';
-
-  if (!nrp) {
-    showSyncResult("Harap masukkan NRP Anda.", "error");
-    setTimeout(() => setSyncBtnState(false), 1500);
-    return;
-  }
-
-  if (!navigator.onLine) {
-    showSyncResult("Koneksi offline. Tidak dapat menyinkronkan profil wajah dari cloud.", "error");
-    setTimeout(() => setSyncBtnState(false), 1500);
-    return;
-  }
-
-  showSyncResult("⏳ Memeriksa profil wajah NRP " + nrp + " di cloud...", "success");
 
   try {
-    const deviceId = getOrCreateDeviceId();
-    let data = null;
-
-    // 1. Coba GET tercepat dengan timeout 6 detik
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
-      const url = `${GAS_URL}?action=get_face_embedding&nrp=${encodeURIComponent(nrp)}&device_id=${encodeURIComponent(deviceId)}`;
-      const response = await fetch(url, { signal: controller.signal, redirect: "follow" });
-      clearTimeout(timeoutId);
-      const text = await response.text();
-      data = JSON.parse(text);
-    } catch (e) { console.warn("Sync GET 1 warning:", e); }
-
-    // 2. Jika gagal atau format lama, coba GET tanpa device_id
-    if (!data || (data.status !== "success" && data.status !== "ok")) {
-      try {
-        const controller2 = new AbortController();
-        const timeoutId2 = setTimeout(() => controller2.abort(), 6000);
-        const urlNoDevice = `${GAS_URL}?action=get_face_embedding&nrp=${encodeURIComponent(nrp)}`;
-        const resp2 = await fetch(urlNoDevice, { signal: controller2.signal, redirect: "follow" });
-        clearTimeout(timeoutId2);
-        const text2 = await resp2.text();
-        const data2 = JSON.parse(text2);
-        if (data2 && (data2.status === "success" || data2.status === "ok")) {
-          data = data2;
-        }
-      } catch (e) { console.warn("Sync GET 2 warning:", e); }
+    const input = document.getElementById('tugasLuarEventName');
+    const eventName = input ? input.value.trim() : '';
+    if (!eventName) {
+      const msg = "Harap masukkan Nama Event / Nama Kegiatan terlebih dahulu.";
+      dbgLog("⚠️ " + msg);
+      if (errBox) {
+        errBox.style.display = 'block';
+        errBox.innerText = "⚠️ " + msg;
+      }
+      alert(msg);
+      return;
     }
 
-    if (data && (data.status === "success" || data.status === "ok")) {
-      const embeddingArray = data.message || data.face_embedding || data.embedding || data.data;
-      const serverDeviceId = data.device_id || data.registered_device_id || (data.data && typeof data.data === 'object' ? data.data.device_id : null);
+    let localNRP = localStorage.getItem('attendance_registered_nrp') ||
+      (currentUserProfile ? currentUserProfile.nrp : '');
 
-      // Simpan di localStorage browser ini
-      localStorage.setItem('attendance_registered_nrp', nrp);
-      if (embeddingArray) {
-        localStorage.setItem('attendance_registered_embeddings', typeof embeddingArray === 'string' ? embeddingArray : JSON.stringify(embeddingArray));
-        registeredEmbeddings = embeddingArray;
-      }
+    if (!localNRP) {
+      dbgLog('🔍 Mencoba auto-restore NRP untuk Tugas Luar...');
+      localNRP = await tryAutoRestoreNRP(false);
+    }
 
-      // Jika server mengembalikan Device ID resmi dari Google Sheets, perbarui local device_id
-      if (serverDeviceId) {
-        localStorage.setItem('attendance_device_id', serverDeviceId);
-        localStorage.setItem('attendance_registered_device_id', serverDeviceId);
-        console.log('[DBG] Device ID resmi disinkronkan dari server:', serverDeviceId);
-      } else {
-        localStorage.setItem('attendance_registered_device_id', deviceId);
-      }
-
-      // Trigger pembaruan profil user header banner
-      identifyDeviceUser();
-
-      showSyncResult("✅ Perangkat berhasil disinkronkan! Profil NRP " + nrp + " terverifikasi.", "success");
-
+    if (!localNRP) {
+      const nrpWarn = "NRP belum terdaftar di perangkat ini. Silakan daftarkan atau sinkronkan NRP terlebih dahulu.";
+      dbgLog("⚠️ " + nrpWarn);
+      alert("⚠️ " + nrpWarn);
+      closeTugasLuarModal();
       setTimeout(() => {
-        setSyncBtnState(false);
-        closeSyncOverlay();
-        if (scannedQRData) {
-          startLivenessCamera();
-        } else {
-          startQRScanner();
-        }
-      }, 1000);
-    } else {
-      const serverMsg = (data && data.message) ? data.message : ("NRP (" + nrp + ") belum terdaftar di database cloud.");
-      showSyncResult("❌ " + serverMsg + "<br><br><span style='font-size:0.8rem; color:#cbd5e1;'>Pastikan NRP sudah pernah didaftarkan.</span>", "error");
-      setTimeout(() => setSyncBtnState(false), 2000);
+        openSyncOverlay();
+      }, 500);
+      return;
     }
+    dbgLog(`👤 Registered NRP: ${localNRP}`);
+
+    isTugasLuarMode = true;
+    tugasLuarEventName = eventName;
+    dbgLog(`✅ Tugas Luar Event Name diset: "${eventName}"`);
+
+    scannedQRData = {
+      outlet: "EVENT_" + eventName.toUpperCase().replace(/\s+/g, '_'),
+      totp_token: "TUGAS_LUAR_TOKEN",
+      timestamp: Math.floor(Date.now() / 1000)
+    };
+    dbgLog(`📦 Simulated scannedQRData set: ${JSON.stringify(scannedQRData)}`);
+
+    closeTugasLuarModal();
+
+    const overlays = document.querySelectorAll('.overlay');
+    overlays.forEach(overlay => {
+      overlay.style.display = 'none';
+    });
+
+    dbgLog("⏳ Menghentikan semua kamera sebelum verifikasi wajah...");
+    await stopAllCameras();
+    await new Promise(r => setTimeout(r, 500));
+    dbgLog("✅ Kamera dihentikan, siap membuka kamera depan");
+
+    const vScan = document.getElementById('viewScan');
+    if (vScan && !vScan.classList.contains('active')) {
+      document.querySelectorAll('.view-screen').forEach(s => s.classList.remove('active'));
+      vScan.classList.add('active');
+
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      const scanTab = document.querySelector('.tab-btn:first-child');
+      if (scanTab) scanTab.classList.add('active');
+    }
+
+    dbgLog("🎥 Memulai kamera verifikasi wajah (startLivenessCamera)...");
+    await startLivenessCamera();
+    dbgLog("✅ Kamera depan aktif — verifikasi wajah Tugas Luar dimulai!");
+
   } catch (err) {
-    console.error("Gagal sinkronisasi wajah:", err);
-    showSyncResult("❌ Gagal terhubung ke server cloud: " + (err.message || err.toString()), "error");
-    setTimeout(() => setSyncBtnState(false), 2000);
+    const errorMsg = "Gagal memulai Absen Tugas Luar: " + (err.message || err.toString());
+    console.error("Gagal memulai Absen Tugas Luar:", err);
+    dbgLog("❌ " + errorMsg + "\nStack: " + (err.stack || 'no stack'));
+    if (errBox) {
+      errBox.style.display = 'block';
+      errBox.innerText = "❌ " + errorMsg;
+    }
+    showDebugPanel(true);
+    alert("❌ " + errorMsg);
+
+    isTugasLuarMode = false;
+    tugasLuarEventName = "";
+    isProcessingQRScan = false;
   }
+}
+
+// =========================================================================
+// OVERLAY FUNCTIONS
+// =========================================================================
+
+function openSyncOverlay() {
+  const overlay = document.getElementById('syncNrpOverlay');
+  if (overlay) overlay.style.display = 'flex';
 }
 
 function closeSyncOverlay() {
@@ -2727,79 +2155,20 @@ function goToRegistrationFromOverlay() {
   }
 }
 
-/**
- * Mencoba memulihkan NRP pengguna secara otomatis dari cloud berdasarkan Device ID
- */
-async function tryAutoRestoreNRP() {
-  let activeNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
-  if (activeNRP) return activeNRP;
-
-  if (!navigator.onLine) return null;
-  try {
-    dbgLog('🔍 Memulai tryAutoRestoreNRP dari Device ID...');
-    const devId = getOrCreateDeviceId();
-    const url = `${GAS_URL}?action=get_user_by_device_id&device_id=${encodeURIComponent(devId)}`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
-    const resp = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    const resData = await resp.json();
-    const userInfo = (resData && resData.data && typeof resData.data === 'object') 
-      ? resData.data 
-      : ((resData && resData.message && typeof resData.message === 'object') 
-        ? resData.message 
-        : resData);
-    if (resData && (resData.status === 'success' || resData.code === 200) && userInfo && userInfo.nrp) {
-      activeNRP = userInfo.nrp;
-      localStorage.setItem('attendance_registered_nrp', activeNRP);
-      if (userInfo.name) localStorage.setItem('attendance_user_name', userInfo.name);
-      if (userInfo.position) localStorage.setItem('attendance_user_position', userInfo.position);
-      if (userInfo.outlet) localStorage.setItem('attendance_user_outlet', userInfo.outlet);
-      currentUserProfile = userInfo;
-      dbgLog('✅ Auto-restore NRP berhasil: ' + activeNRP);
-      identifyDeviceUser();
-      return activeNRP;
-    }
-  } catch (e) {
-    console.warn('[AutoRestore] Gagal:', e);
-  }
-  return null;
-}
-window.tryAutoRestoreNRP = tryAutoRestoreNRP;
-
-function openSyncOverlay() {
-  const overlay = document.getElementById('syncNrpOverlay');
-  if (overlay) overlay.style.display = 'flex';
-}
-window.openSyncOverlay = openSyncOverlay;
-window.closeSyncOverlay = closeSyncOverlay;
-window.goToRegistrationFromOverlay = goToRegistrationFromOverlay;
-window.openUnbindOverlay = openUnbindOverlay;
-window.closeUnbindOverlay = closeUnbindOverlay;
-
-function showSyncResult(message, type) {
-  const resultDiv = document.getElementById('syncResult');
-  if (resultDiv) {
-    resultDiv.innerHTML = message;
-    resultDiv.className = "feedback-message " + (type === 'success' ? 'feedback-success' : 'feedback-error');
-    resultDiv.style.display = 'block';
-  }
-}
-
 function openUnbindOverlay(prefillNRP) {
   const overlay = document.getElementById('unbindDeviceOverlay');
   const inputNrp = document.getElementById('unbindNRP');
   const resultDiv = document.getElementById('unbindResult');
-  
+
   if (resultDiv) resultDiv.style.display = 'none';
-  
+
   if (prefillNRP && inputNrp) {
     inputNrp.value = prefillNRP;
   } else if (inputNrp && !inputNrp.value) {
     const savedNrp = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
     if (savedNrp) inputNrp.value = savedNrp;
   }
-  
+
   if (overlay) overlay.style.display = 'flex';
 }
 
@@ -2807,7 +2176,7 @@ function closeUnbindOverlay() {
   const overlay = document.getElementById('unbindDeviceOverlay');
   const resultDiv = document.getElementById('unbindResult');
   const btn = document.getElementById('btnSendUnbind');
-  
+
   if (overlay) overlay.style.display = 'none';
   if (resultDiv) resultDiv.style.display = 'none';
   if (btn) {
@@ -2820,21 +2189,21 @@ function closeUnbindOverlay() {
 async function sendUnbindDeviceRequest(btnElement) {
   const inputNrp = document.getElementById('unbindNRP');
   const selectReason = document.getElementById('unbindReason');
-  
+
   const nrp = inputNrp ? inputNrp.value.trim() : '';
   const reason = selectReason ? selectReason.value : 'Ganti HP Baru';
   const deviceId = getOrCreateDeviceId();
-  
+
   if (!nrp) {
     showUnbindResult("❌ NRP wajib diisi.", "error");
     return;
   }
-  
+
   if (btnElement) {
     btnElement.disabled = true;
     btnElement.innerHTML = '⏳ Mengirim Permintaan...';
   }
-  
+
   try {
     const payload = {
       action: "request_unbind_device",
@@ -2842,28 +2211,25 @@ async function sendUnbindDeviceRequest(btnElement) {
       reason: reason,
       device_id: deviceId
     };
-    
+
     const response = await fetch(GAS_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(payload)
     });
-    
+
     const data = await response.json();
     const isSuccess = data && (data.status === "success" || data.code === 200);
 
     if (isSuccess) {
       showUnbindResult("✅ " + (data.message || "Permintaan unbind berhasil dikirim ke HR Admin!"), "success");
-      
-      // Simpan NRP sebagai flag "pending unbind" sebelum data lain dihapus
-      try { localStorage.setItem('attendance_pending_unbind_nrp', nrp); } catch(e) {}
-      
-      // Sembunyikan tombol kirim dan batal agar tidak bisa diklik lagi
+
+      try { localStorage.setItem('attendance_pending_unbind_nrp', nrp); } catch (e) { }
+
       if (btnElement) btnElement.style.display = 'none';
       const cancelBtn = document.querySelector('#unbindDeviceOverlay .btn-secondary');
       if (cancelBtn) cancelBtn.style.display = 'none';
 
-      // Setelah 2 detik, hapus semua data lokal dan tutup tab
       setTimeout(async () => {
         await clearAllLocalDataAndClose(nrp);
       }, 2000);
@@ -2878,29 +2244,10 @@ async function sendUnbindDeviceRequest(btnElement) {
   }
 }
 
-function showUnbindResult(message, type) {
-  const resultDiv = document.getElementById('unbindResult');
-  if (resultDiv) {
-    resultDiv.innerHTML = message;
-    resultDiv.className = "feedback-message " + (type === 'success' ? 'feedback-success' : 'feedback-error');
-    resultDiv.style.display = 'block';
-  }
-}
-
-/* ==========================================================================
-   FUNGSI UNBIND DEVICE LIFECYCLE
-   ========================================================================== */
-
-/**
- * Menghapus semua data lokal (localStorage, Service Worker cache) dan menutup tab PWA.
- * Dipanggil setelah request unbind berhasil dikirim ATAU setelah status APPROVED terdeteksi.
- */
 async function clearAllLocalDataAndClose(nrp) {
   console.log('[Unbind] Menghapus semua data lokal untuk NRP:', nrp);
-  
-  // 1. Hapus semua localStorage
+
   try {
-    // Hapus satu per satu kunci yang diketahui + semua prefix dinamis
     const keysToRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
@@ -2919,7 +2266,6 @@ async function clearAllLocalDataAndClose(nrp) {
     console.warn('[Unbind] Gagal membersihkan localStorage:', e);
   }
 
-  // 2. Unregister Service Worker & hapus semua cache
   try {
     if ('serviceWorker' in navigator) {
       const registrations = await navigator.serviceWorker.getRegistrations();
@@ -2937,10 +2283,8 @@ async function clearAllLocalDataAndClose(nrp) {
     console.warn('[Unbind] Gagal unregister SW atau hapus cache:', e);
   }
 
-  // 3. Tutup tab / tampilkan pesan instruksi
   console.log('[Unbind] Mencoba menutup tab...');
   try {
-    // Tampilkan overlay pesan penutupan terlebih dahulu
     const overlay = document.getElementById('unbindDeviceOverlay');
     if (overlay) {
       const card = overlay.querySelector('.modal-card') || overlay.querySelector('div');
@@ -2960,7 +2304,6 @@ async function clearAllLocalDataAndClose(nrp) {
     }
     window.setTimeout(() => {
       window.close();
-      // Jika window.close() tidak berhasil (dibuka manual), reload ke halaman kosong
       setTimeout(() => {
         if (!window.closed) {
           window.location.replace('about:blank');
@@ -2972,193 +2315,10 @@ async function clearAllLocalDataAndClose(nrp) {
   }
 }
 
-/**
- * Mengecek status unbind request untuk NRP tertentu dari server GAS.
- * Return: { status: "PENDING" | "APPROVED" | "REJECTED" | "NONE" }
- */
-async function checkUnbindStatusFromServer(nrp) {
-  if (!nrp || !GAS_URL || GAS_URL === '__GAS_URL__') {
-    return { status: 'NONE' };
-  }
-  try {
-    const url = `${GAS_URL}?action=check_unbind_status&nrp=${encodeURIComponent(nrp)}`;
-    const response = await fetch(url, { cache: 'no-store' });
-    const resData = await response.json();
-    
-    const isSuccess = resData && (resData.status === 'success' || resData.code === 200);
-    if (isSuccess) {
-      const payload = (resData.data && typeof resData.data === 'object') ? resData.data
-        : ((resData.message && typeof resData.message === 'object') ? resData.message : {});
-      return {
-        status: payload.status || 'NONE',
-        requested_at: payload.requested_at || ''
-      };
-    }
-    return { status: 'NONE' };
-  } catch (err) {
-    console.warn('[Unbind] Gagal cek status dari server:', err);
-    return { status: 'NONE' }; // Jika offline/error, biarkan lanjut (offline-first)
-  }
-}
+// =========================================================================
+// IDENTIFY DEVICE USER & SUPERVISOR
+// =========================================================================
 
-/**
- * Menampilkan overlay "Menunggu Persetujuan HR" — memblokir semua aktivitas di PWA.
- */
-function showUnbindPendingScreen(nrp, requestedAt) {
-  const overlay = document.getElementById('unbindPendingOverlay');
-  if (!overlay) return;
-  
-  const nrpInfo = document.getElementById('unbindPendingNrpInfo');
-  if (nrpInfo) {
-    const dateStr = requestedAt ? ` • Dikirim: ${requestedAt}` : '';
-    nrpInfo.innerText = `NRP: ${nrp}${dateStr}`;
-  }
-  
-  overlay.style.display = 'flex';
-  
-  // Pastikan tidak ada overlay lain yang terbuka
-  ['unbindDeviceOverlay', 'syncOverlay', 'shiftSelectOverlay', 'reasonSelectOverlay', 'supervisorApprovalOverlay'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = 'none';
-  });
-  
-  console.log('[Unbind] Overlay pending HR ditampilkan untuk NRP:', nrp);
-}
-
-/**
- * Tombol "Cek Status Ulang" di overlay pending — mengecek apakah sudah di-approve.
- */
-async function retryUnbindStatusCheck() {
-  const nrp = localStorage.getItem('attendance_pending_unbind_nrp') || localStorage.getItem('attendance_registered_nrp');
-  if (!nrp) return;
-  
-  const icon = document.getElementById('unbindPendingIcon');
-  const title = document.getElementById('unbindPendingTitle');
-  const msg = document.getElementById('unbindPendingMsg');
-  
-  if (icon) icon.innerText = '🔄';
-  if (title) title.innerText = 'Mengecek Status...';
-  if (msg) msg.innerText = 'Menghubungi server, harap tunggu...';
-  
-  const result = await checkUnbindStatusFromServer(nrp);
-  
-  if (result.status === 'APPROVED') {
-    // Approved! Hapus data lokal dan arahkan ke registrasi ulang
-    await handleUnbindApproved(nrp);
-  } else if (result.status === 'PENDING') {
-    // Masih pending
-    if (icon) icon.innerText = '⏳';
-    if (title) { title.innerText = 'Menunggu Persetujuan HR'; title.style.color = '#f59e0b'; }
-    if (msg) msg.innerHTML = 'Permintaan Anda masih dalam proses review.<br><br>Silakan hubungi HR Admin.';
-  } else if (result.status === 'REJECTED') {
-    // Ditolak — sembunyikan overlay agar karyawan bisa kembali scan
-    if (icon) icon.innerText = '❌';
-    if (title) { title.innerText = 'Permintaan Ditolak'; title.style.color = '#ef4444'; }
-    if (msg) msg.innerHTML = 'Permintaan unbind device Anda ditolak oleh HR Admin.<br>Silakan hubungi HR Admin untuk informasi lebih lanjut.';
-    // Hapus flag pending
-    localStorage.removeItem('attendance_pending_unbind_nrp');
-    // Sembunyikan overlay setelah 4 detik
-    setTimeout(() => {
-      const overlay = document.getElementById('unbindPendingOverlay');
-      if (overlay) overlay.style.display = 'none';
-    }, 4000);
-  } else {
-    // NONE / tidak ditemukan — kemungkinan sudah di-clear atau error
-    if (icon) icon.innerText = '✅';
-    if (title) { title.innerText = 'Status Tidak Ditemukan'; title.style.color = '#10b981'; }
-    if (msg) msg.innerHTML = 'Tidak ada permintaan aktif yang ditemukan.<br>Anda dapat kembali menggunakan PWA.';
-    localStorage.removeItem('attendance_pending_unbind_nrp');
-    setTimeout(() => {
-      const overlay = document.getElementById('unbindPendingOverlay');
-      if (overlay) overlay.style.display = 'none';
-    }, 3000);
-  }
-}
-
-/**
- * Menangani status APPROVED: hapus semua data lokal & arahkan ke form registrasi ulang.
- */
-async function handleUnbindApproved(nrp) {
-  console.log('[Unbind] Status APPROVED terdeteksi untuk NRP:', nrp, '— menghapus data lokal...');
-  
-  const currentNRP = localStorage.getItem('attendance_registered_nrp');
-  if (currentNRP && currentNRP !== nrp) {
-    console.log('[Unbind Approved] NRP saat ini (' + currentNRP + ') berbeda dengan NRP unbind (' + nrp + '), skip penanganan unbind.');
-    return;
-  }
-  
-  const overlay = document.getElementById('unbindPendingOverlay');
-  const icon = document.getElementById('unbindPendingIcon');
-  const title = document.getElementById('unbindPendingTitle');
-  const msg = document.getElementById('unbindPendingMsg');
-  
-  if (icon) icon.innerText = '✅';
-  if (title) { title.innerText = 'Disetujui HR!'; title.style.color = '#10b981'; }
-  if (msg) msg.innerHTML = 'Permintaan penggantian device Anda telah disetujui.<br><br>Hapus data lokal, silakan registrasi ulang wajah Anda di perangkat baru.';
-  
-  // Hapus semua data lokal kecuali tanda bahwa perlu registrasi ulang
-  try {
-    const keysToRemove = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k) keysToRemove.push(k);
-    }
-    keysToRemove.forEach(k => {
-      if (
-        k === 'attendance_registered_nrp' ||
-        k === 'attendance_device_id' ||
-        k === 'attendance_user_name' ||
-        k === 'attendance_user_position' ||
-        k === 'attendance_user_outlet' ||
-        k === 'attendance_pending_unbind_nrp' ||
-        k.startsWith('attendance_status_') ||
-        k.startsWith('outlet_shifts_')
-      ) {
-        localStorage.removeItem(k);
-      }
-    });
-    console.log('[Unbind Approved] Data lokal dihapus.');
-  } catch (e) {
-    console.warn('[Unbind Approved] Gagal hapus localStorage:', e);
-  }
-  
-  // Sembunyikan overlay pending setelah 2 detik lalu tampilkan form registrasi
-  setTimeout(() => {
-    if (overlay) overlay.style.display = 'none';
-    
-    // Reset face recognition state
-    faceMatcher = null;
-    latestLiveDescriptor = null;
-    livenessPassed = false;
-    faceVerified = false;
-    isAttendanceSubmitted = false;
-    
-    // Tampilkan overlay sinkronisasi / registrasi ulang
-    if (typeof openSyncOverlay === 'function') {
-      openSyncOverlay();
-      // Update pesan di dalam overlay
-      setTimeout(() => {
-        const syncTitle = document.querySelector('#syncOverlay h2, #syncOverlay .modal-card h2');
-        const syncMsg = document.querySelector('#syncOverlay p, #syncOverlay .modal-card p');
-        if (syncTitle) syncTitle.innerText = '📲 Registrasi Ulang Wajah';
-        if (syncMsg) syncMsg.innerText = 'Device Anda telah disetujui untuk diganti. Silakan masukkan NRP dan lakukan registrasi wajah ulang di device baru ini.';
-      }, 100);
-    } else {
-      // Fallback: switch ke tab registrasi
-      if (typeof switchView === 'function') switchView('register');
-    }
-  }, 2500);
-}
-
-
-
-let cachedSupervisorPending = [];
-let isSupervisorRole = false;
-let currentUserProfile = null;
-
-/**
- * Mengenali pengguna perangkat berdasarkan Device ID dan/atau NRP lokal tersimpan
- */
 async function identifyDeviceUser() {
   const deviceId = getOrCreateDeviceId();
   const localNRP = localStorage.getItem('attendance_registered_nrp') || '';
@@ -3169,7 +2329,6 @@ async function identifyDeviceUser() {
   const posEl = document.getElementById('userPosVal');
   const outletEl = document.getElementById('userOutletVal');
 
-  // Cek jika ada Sesi Area Manager tersimpan di LocalStorage
   const amSessionStr = localStorage.getItem('attendance_am_session');
   if (amSessionStr) {
     try {
@@ -3184,7 +2343,7 @@ async function identifyDeviceUser() {
         submitAmLogin(amSess.name, amSess.pin, true);
         return;
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   if (localNRP) {
@@ -3206,10 +2365,10 @@ async function identifyDeviceUser() {
     const response = await fetch(url);
     const resData = await response.json();
 
-    const userInfo = (resData && resData.data && typeof resData.data === 'object') 
-      ? resData.data 
-      : ((resData && resData.message && typeof resData.message === 'object') 
-        ? resData.message 
+    const userInfo = (resData && resData.data && typeof resData.data === 'object')
+      ? resData.data
+      : ((resData && resData.message && typeof resData.message === 'object')
+        ? resData.message
         : resData);
 
     const isSuccess = resData && (resData.status === 'success' || resData.code === 200);
@@ -3219,6 +2378,7 @@ async function identifyDeviceUser() {
 
       if (userInfo.nrp) {
         localStorage.setItem('attendance_registered_nrp', userInfo.nrp);
+        verifiedNRPCache = userInfo.nrp;
       }
       if (userInfo.name) {
         localStorage.setItem('attendance_user_name', userInfo.name);
@@ -3230,7 +2390,6 @@ async function identifyDeviceUser() {
         localStorage.setItem('attendance_user_outlet', userInfo.outlet);
       }
 
-      // Sinkronisasi Otomatis Status Absensi Hari Ini dari Cloud ke Perangkat Baru
       if (userInfo.today_status && userInfo.nrp) {
         saveTodayAttendanceStatus(userInfo.nrp, {
           hasClockIn: userInfo.today_status.has_clock_in || false,
@@ -3249,8 +2408,6 @@ async function identifyDeviceUser() {
       if (userInfo.is_supervisor) {
         checkSupervisorRoleForNRP(userInfo.nrp, false);
       } else {
-        const legacyBanner = document.getElementById('supervisorBanner');
-        if (legacyBanner) legacyBanner.style.display = 'none';
         const spvHeaderBtn = document.getElementById('spvHeaderBtn');
         if (spvHeaderBtn) spvHeaderBtn.style.display = 'none';
       }
@@ -3274,9 +2431,6 @@ async function identifyDeviceUser() {
   }
 }
 
-/**
- * Memeriksa Peran Supervisor untuk NRP tertentu
- */
 async function checkSupervisorRoleForNRP(targetNRP, showToast = false) {
   if (!targetNRP) return;
 
@@ -3299,9 +2453,6 @@ async function checkSupervisorRoleForNRP(targetNRP, showToast = false) {
       const isAM = dataObj.is_area_manager || resData.is_area_manager || false;
       const roleTitle = isAM ? "Area Manager" : "Supervisor";
 
-      const banner = document.getElementById('supervisorBanner');
-      const badge = document.getElementById('spvBadgeCount');
-      const spvText = document.getElementById('spvBannerText');
       const spvHeaderBtn = document.getElementById('spvHeaderBtn');
       const spvHeaderBadge = document.getElementById('spvHeaderBadge');
 
@@ -3312,18 +2463,12 @@ async function checkSupervisorRoleForNRP(targetNRP, showToast = false) {
       }
       if (spvHeaderBadge) spvHeaderBadge.innerText = cachedSupervisorPending.length;
 
-      if (banner) banner.style.display = 'none';
-      if (badge) badge.innerText = cachedSupervisorPending.length + " Pengajuan";
-      if (spvText) spvText.innerText = "Panel " + roleTitle;
-
       if (showToast) {
-        showScanResult("✅ Akses " + roleTitle + " Aktif (" + spvName + "): " + cachedSupervisorPending.length + " antrean", "info");
+        showScanResult("✅ Akses " + roleTitle + " Aktif: " + cachedSupervisorPending.length + " antrean", "info");
       }
       renderSupervisorPendingList(dataObj);
     } else {
       isSupervisorRole = false;
-      const banner = document.getElementById('supervisorBanner');
-      if (banner) banner.style.display = 'none';
       const spvHeaderBtn = document.getElementById('spvHeaderBtn');
       if (spvHeaderBtn) spvHeaderBtn.style.display = 'none';
 
@@ -3336,9 +2481,6 @@ async function checkSupervisorRoleForNRP(targetNRP, showToast = false) {
   }
 }
 
-/**
- * Memeriksa Peran Supervisor Pengguna berdasarkan NRP tersimpan di LocalStorage
- */
 async function checkSupervisorRole(showToast = false) {
   const localNRP = localStorage.getItem('attendance_registered_nrp');
   if (localNRP) {
@@ -3346,9 +2488,6 @@ async function checkSupervisorRole(showToast = false) {
   }
 }
 
-/**
- * Render daftar kartu pengajuan persetujuan di modal supervisor
- */
 function renderSupervisorPendingList(data) {
   const container = document.getElementById('spvPendingListContainer');
   const tabContainer = document.getElementById('amPendingListTabContainer');
@@ -3447,9 +2586,6 @@ function closeSupervisorOverlay() {
   if (overlay) overlay.style.display = 'none';
 }
 
-/**
- * Mengirim Keputusan Supervisor (APPROVED / REJECTED) ke GAS Server Cloud
- */
 async function handleSupervisorDecision(targetNrp, targetTimestamp, decision, cardIndex) {
   let supervisorNrp = localStorage.getItem('attendance_registered_nrp');
   let amSessionName = '';
@@ -3461,7 +2597,7 @@ async function handleSupervisorDecision(targetNrp, targetTimestamp, decision, ca
         amSessionName = parsedAm.name;
         if (!supervisorNrp) supervisorNrp = parsedAm.name;
       }
-    } catch(e){}
+    } catch (e) { }
   }
 
   if (!supervisorNrp) return;
@@ -3510,9 +2646,10 @@ async function handleSupervisorDecision(targetNrp, targetTimestamp, decision, ca
   }
 }
 
-/**
- * Membuka Modal Login Area Manager & Mengambil daftar nama AM dari GAS
- */
+// =========================================================================
+// AREA MANAGER FUNCTIONS
+// =========================================================================
+
 async function populateAmDropdown() {
   const selects = [
     document.getElementById('amSelectName'),
@@ -3521,7 +2658,7 @@ async function populateAmDropdown() {
 
   if (selects.length === 0) return;
   selects.forEach(s => s.innerHTML = '<option value="">⏳ Memuat daftar Area Manager...</option>');
-  
+
   const defaultAmList = [
     "AM Area Jabodetabek (Demo)",
     "AM Area West (Demo)",
@@ -3556,13 +2693,11 @@ async function populateAmDropdown() {
     });
   }
 }
-window.populateAmDropdown = populateAmDropdown;
 
 function openAmLoginModal() {
   if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
   switchView('am');
 }
-window.openAmLoginModal = openAmLoginModal;
 
 function logoutAmSession() {
   localStorage.removeItem('attendance_am_session');
@@ -3570,26 +2705,19 @@ function logoutAmSession() {
   const amLoginForm = document.getElementById('amLoginForm');
   const amLoggedInArea = document.getElementById('amLoggedInArea');
   const userHeaderBanner = document.getElementById('userHeaderBanner');
-  
+
   if (amLoginForm) amLoginForm.style.display = 'flex';
   if (amLoggedInArea) amLoggedInArea.style.display = 'none';
   if (userHeaderBanner) userHeaderBanner.style.display = 'none';
-  
+
   populateAmDropdown();
 }
-window.logoutAmSession = logoutAmSession;
 
 function closeAmLoginModal() {
   const overlay = document.getElementById('amLoginModalOverlay');
   if (overlay) overlay.style.display = 'none';
 }
-window.closeAmLoginModal = closeAmLoginModal;
 
-window.submitAmLogin = submitAmLogin;
-
-/**
- * Memproses Submit Login Area Manager (Nama + PIN)
- */
 async function submitAmLogin(amNameOver = null, amPinOver = null, isAutoLogin = false) {
   const selectEl = document.getElementById('amSelectName') || document.getElementById('amModalSelectName');
   const modalSelectEl = document.getElementById('amModalSelectName');
@@ -3647,18 +2775,6 @@ async function submitAmLogin(amNameOver = null, amPinOver = null, isAutoLogin = 
           outlet: "Golden Lamian Mall Kelapa Gading",
           reason: "Izin Terlambat",
           notes: "Macet parah karena hujan [Supervisor Approval Required | Izin Terlambat]"
-        },
-        {
-          row_index: 3,
-          nrp: "SNI00456",
-          employee_name: "Siti Rahma",
-          timestamp: "1723020500",
-          date: getTodayDateStr(),
-          time: "17:05:10",
-          type: "CLOCK_OUT",
-          outlet: "Golden Lamian Grand Indonesia",
-          reason: "Lupa Absen",
-          notes: "HP mati saat jam pulang [Supervisor Approval Required | Lupa Absen]"
         }
       ]
     };
@@ -3730,6 +2846,10 @@ async function submitAmLogin(amNameOver = null, amPinOver = null, isAutoLogin = 
   }
 }
 
+// =========================================================================
+// CHANGE PIN
+// =========================================================================
+
 let isForcedPinChangeActive = false;
 
 function openChangePinModal(isForced = false) {
@@ -3764,9 +2884,6 @@ function closeChangePinModal() {
   if (overlay) overlay.style.display = 'none';
 }
 
-/**
- * Memproses Perubahan PIN Area Manager
- */
 async function submitChangeAmPin() {
   const amSessionStr = localStorage.getItem('attendance_am_session');
   if (!amSessionStr) {
@@ -3777,7 +2894,7 @@ async function submitChangeAmPin() {
   try {
     const parsed = JSON.parse(amSessionStr);
     amName = parsed.name || '';
-  } catch(e){}
+  } catch (e) { }
 
   if (!amName) {
     alert("Sesi Area Manager tidak valid.");
@@ -3832,7 +2949,7 @@ async function submitChangeAmPin() {
 
       const wasForced = isForcedPinChangeActive;
       isForcedPinChangeActive = false;
-      
+
       const overlay = document.getElementById('changePinModalOverlay');
       if (overlay) overlay.style.display = 'none';
 
@@ -3851,3 +2968,94 @@ async function submitChangeAmPin() {
     alert("❌ Gagal terhubung ke server untuk mengubah PIN.");
   }
 }
+
+const CACHE_NAME = 'attendance-pwa-v42';
+const ASSETS_TO_CACHE = [
+  './',
+  './index.html',
+  './pwa_app.js',
+  './qrcode.min.js',
+  'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js',
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js',
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/tiny_face_detector_model-weights_manifest.json',
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/tiny_face_detector_model-shard1',
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_landmark_68_model-weights_manifest.json',
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_landmark_68_model-shard1',
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-weights_manifest.json',
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-shard1',
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/face_recognition_model-shard2'
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      console.log('[Service Worker] Caching app shell and AI face models');
+      return cache.addAll(ASSETS_TO_CACHE).catch(err => {
+        console.warn('[Service Worker] Partial cache warning:', err);
+      });
+    })
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keyList) => {
+      return Promise.all(
+        keyList.map((key) => {
+          if (key !== CACHE_NAME) {
+            return caches.delete(key);
+          }
+        })
+      );
+    })
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', (event) => {
+  const url = event.request.url;
+
+  if (
+    event.request.method !== 'GET' ||
+    url.includes('script.google.com') ||
+    url.includes('script.googleusercontent.com')
+  ) {
+    return;
+  }
+
+  if (url.includes('pwa_app.js') || url.includes('index.html') || url.endsWith('/')) {
+    event.respondWith(
+      fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseToCache));
+        }
+        return networkResponse;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  event.respondWith(
+    caches.match(event.request).then((cachedResponse) => {
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+      return fetch(event.request).then((networkResponse) => {
+        if (networkResponse.status === 200 && url.startsWith('http')) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache).catch(() => { });
+          });
+        }
+        return networkResponse;
+      }).catch(err => {
+        console.warn('[Service Worker] Fetch failed:', err);
+      });
+    })
+  );
+});
+
+
+
