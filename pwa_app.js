@@ -67,6 +67,7 @@ async function startTugasLuarScan() {
   if (errBox) { errBox.style.display = 'none'; errBox.innerText = ''; }
 
   try {
+    // 1. Validasi input nama event
     const input = document.getElementById('tugasLuarEventName');
     const eventName = input ? input.value.trim() : '';
     if (!eventName) {
@@ -77,22 +78,26 @@ async function startTugasLuarScan() {
       return;
     }
 
+    // 2. Cek NRP terdaftar
+    let localNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
+    if (!localNRP) {
+      localNRP = await tryAutoRestoreNRP();
+    }
+    if (!localNRP) {
+      const nrpWarn = "NRP belum terdaftar di perangkat ini. Silakan daftarkan atau sinkronkan NRP terlebih dahulu.";
+      dbgLog("⚠️ " + nrpWarn);
+      alert("⚠️ " + nrpWarn);
+      closeTugasLuarModal();
+      openSyncOverlay();
+      return;
+    }
+    dbgLog(`👤 Registered NRP: ${localNRP}`);
+
+    // 3. Set mode tugas luar & data QR simulasi
     isTugasLuarMode = true;
     tugasLuarEventName = eventName;
     dbgLog(`✅ Tugas Luar Event Name diset: "${eventName}"`);
 
-    closeTugasLuarModal();
-    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
-
-    // Pastikan layar viewScan aktif
-    document.querySelectorAll('.view-screen').forEach(s => s.classList.remove('active'));
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    const vScan = document.getElementById('viewScan');
-    if (vScan) vScan.classList.add('active');
-    const tabBtns = document.querySelectorAll('.tab-btn');
-    if (tabBtns[0]) tabBtns[0].classList.add('active');
-
-    // Set simulated QR data for Tugas Luar Event
     scannedQRData = {
       outlet: "EVENT_" + eventName.toUpperCase().replace(/\s+/g, '_'),
       totp_token: "TUGAS_LUAR_TOKEN",
@@ -100,19 +105,28 @@ async function startTugasLuarScan() {
     };
     dbgLog(`📦 Simulated scannedQRData set: ${JSON.stringify(scannedQRData)}`);
 
-    const localNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
-    if (!localNRP) {
-      const nrpWarn = "NRP belum terdaftar di perangkat ini. Silakan daftarkan atau sinkronkan NRP terlebih dahulu.";
-      dbgLog("⚠️ " + nrpWarn);
-      alert("⚠️ " + nrpWarn);
-      openSyncOverlay();
-      return;
-    }
-    dbgLog(`👤 Registered NRP: ${localNRP}`);
+    // 4. Tutup modal dulu
+    closeTugasLuarModal();
+    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
 
-    // Stop QR Scanner and transition to Face Verification (Step 2)
+    // 5. Stop semua kamera secara bersih, lalu tunggu hardware release
+    dbgLog("⏳ Menghentikan semua kamera sebelum verifikasi wajah...");
+    await stopAllCameras();
+    await new Promise(r => setTimeout(r, 500));
+    dbgLog("✅ Kamera dihentikan, siap membuka kamera depan");
+
+    // 6. Pastikan viewScan aktif dan langsung ke Step 2
+    const vScan = document.getElementById('viewScan');
+    if (vScan && !vScan.classList.contains('active')) {
+      document.querySelectorAll('.view-screen').forEach(s => s.classList.remove('active'));
+      vScan.classList.add('active');
+    }
+
+    // 7. Mulai kamera verifikasi wajah (Step 2)
     dbgLog("🎥 Memulai kamera verifikasi wajah (startLivenessCamera)...");
     await startLivenessCamera();
+    dbgLog("✅ Kamera depan aktif — verifikasi wajah Tugas Luar dimulai!");
+
   } catch (err) {
     const errorMsg = "Gagal memulai Absen Tugas Luar: " + (err.message || err.toString());
     console.error("Gagal memulai Absen Tugas Luar:", err);
@@ -340,7 +354,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   setupNetworkMonitoring();
   loadLocalRegistration();
   updateOfflineBadge();
-  identifyDeviceUser();
+  await identifyDeviceUser();
   await loadFaceApiModels();
 
   // Cek status unbind di background (non-blocking) saat app dibuka
@@ -393,9 +407,24 @@ function checkURLParameters() {
     } catch (e) { }
 
     // Pastikan user terdaftar di ponsel ini
-    const localNRP = localStorage.getItem('attendance_registered_nrp');
+    let localNRP = localStorage.getItem('attendance_registered_nrp');
     if (!localNRP) {
-      openSyncOverlay(); // Tampilkan overlay sinkronisasi profil wajah
+      (async () => {
+        localNRP = await tryAutoRestoreNRP();
+        if (!localNRP) {
+          openSyncOverlay(); // Tampilkan overlay sinkronisasi profil wajah
+        } else {
+          const unbindStatus = await checkUnbindStatusFromServer(localNRP);
+          if (unbindStatus.status === 'PENDING') {
+            localStorage.setItem('attendance_pending_unbind_nrp', localNRP);
+            showUnbindPendingScreen(localNRP, unbindStatus.requested_at);
+          } else if (unbindStatus.status === 'APPROVED') {
+            await handleUnbindApproved(localNRP);
+          } else {
+            startLivenessCamera();
+          }
+        }
+      })();
       return true;
     }
 
@@ -1532,27 +1561,10 @@ async function onQRScanSuccess(decodedText, decodedResult) {
 
         let activeNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
         
-        // Penanganan iOS Safari / Isolated Webview: Auto-restore NRP dari cloud jika localStorage kosong
-        if (!activeNRP && navigator.onLine) {
-          dbgLog('🔍 LocalStorage kosong, mencoba auto-identify NRP dari Device ID di cloud...');
-          try {
-            const devId = getOrCreateDeviceId();
-            const url = `${GAS_URL}?action=get_user_by_device_id&device_id=${encodeURIComponent(devId)}`;
-            const resp = await fetch(url);
-            const resData = await resp.json();
-            const userInfo = (resData && resData.data && typeof resData.data === 'object') ? resData.data : ((resData && resData.message && typeof resData.message === 'object') ? resData.message : resData);
-            if (resData && (resData.status === 'success' || resData.code === 200) && userInfo && userInfo.nrp) {
-              activeNRP = userInfo.nrp;
-              localStorage.setItem('attendance_registered_nrp', activeNRP);
-              if (userInfo.name) localStorage.setItem('attendance_user_name', userInfo.name);
-              if (userInfo.position) localStorage.setItem('attendance_user_position', userInfo.position);
-              if (userInfo.outlet) localStorage.setItem('attendance_user_outlet', userInfo.outlet);
-              currentUserProfile = userInfo;
-              dbgLog('✅ Auto-restore NRP berhasil: ' + activeNRP);
-            }
-          } catch(e) {
-            console.warn('[iOS Storage Fix] Auto-identify fallback error:', e);
-          }
+        // Penanganan iOS Safari / Isolated Webview / Storage Loss: Auto-restore NRP dari cloud jika localStorage kosong
+        if (!activeNRP) {
+          dbgLog('🔍 LocalStorage kosong, mencoba auto-restore NRP dari Device ID di cloud...');
+          activeNRP = await tryAutoRestoreNRP();
         }
 
         if (!activeNRP) {
@@ -2740,6 +2752,46 @@ function goToRegistrationFromOverlay() {
   }
 }
 
+/**
+ * Mencoba memulihkan NRP pengguna secara otomatis dari cloud berdasarkan Device ID
+ */
+async function tryAutoRestoreNRP() {
+  let activeNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
+  if (activeNRP) return activeNRP;
+
+  if (!navigator.onLine) return null;
+  try {
+    dbgLog('🔍 Memulai tryAutoRestoreNRP dari Device ID...');
+    const devId = getOrCreateDeviceId();
+    const url = `${GAS_URL}?action=get_user_by_device_id&device_id=${encodeURIComponent(devId)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    const resData = await resp.json();
+    const userInfo = (resData && resData.data && typeof resData.data === 'object') 
+      ? resData.data 
+      : ((resData && resData.message && typeof resData.message === 'object') 
+        ? resData.message 
+        : resData);
+    if (resData && (resData.status === 'success' || resData.code === 200) && userInfo && userInfo.nrp) {
+      activeNRP = userInfo.nrp;
+      localStorage.setItem('attendance_registered_nrp', activeNRP);
+      if (userInfo.name) localStorage.setItem('attendance_user_name', userInfo.name);
+      if (userInfo.position) localStorage.setItem('attendance_user_position', userInfo.position);
+      if (userInfo.outlet) localStorage.setItem('attendance_user_outlet', userInfo.outlet);
+      currentUserProfile = userInfo;
+      dbgLog('✅ Auto-restore NRP berhasil: ' + activeNRP);
+      identifyDeviceUser();
+      return activeNRP;
+    }
+  } catch (e) {
+    console.warn('[AutoRestore] Gagal:', e);
+  }
+  return null;
+}
+window.tryAutoRestoreNRP = tryAutoRestoreNRP;
+
 function openSyncOverlay() {
   const overlay = document.getElementById('syncNrpOverlay');
   if (overlay) overlay.style.display = 'flex';
@@ -3053,6 +3105,12 @@ async function retryUnbindStatusCheck() {
  */
 async function handleUnbindApproved(nrp) {
   console.log('[Unbind] Status APPROVED terdeteksi untuk NRP:', nrp, '— menghapus data lokal...');
+  
+  const currentNRP = localStorage.getItem('attendance_registered_nrp');
+  if (currentNRP && currentNRP !== nrp) {
+    console.log('[Unbind Approved] NRP saat ini (' + currentNRP + ') berbeda dengan NRP unbind (' + nrp + '), skip penanganan unbind.');
+    return;
+  }
   
   const overlay = document.getElementById('unbindPendingOverlay');
   const icon = document.getElementById('unbindPendingIcon');

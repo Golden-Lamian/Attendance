@@ -646,17 +646,7 @@
 
 <body>
 
-  <!-- Standalone Button untuk Pengecekan Absen Tugas Luar (Diluar container apapun) -->
-  <div style="padding: 12px; background: #1e1b4b; border-bottom: 2px solid #6366f1; text-align: center; display: flex; flex-direction: column; gap: 8px; align-items: center;">
-    <button type="button" class="btn" onclick="openTugasLuarModal()"
-      style="width: 100%; max-width: 400px; padding: 14px; font-size: 0.95rem; font-weight: 700; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); color: white; border: none; border-radius: 10px; box-shadow: 0 4px 14px rgba(99,102,241,0.4); cursor: pointer;">
-      📌 Absen Tugas Luar (Standalone Test)
-    </button>
-    <button type="button" onclick="showDebugPanel(true)"
-      style="background: transparent; border: none; color: #a5b4fc; font-size: 0.8rem; text-decoration: underline; cursor: pointer;">
-      🐞 Tampilkan Debug Info / Detail Error
-    </button>
-  </div>
+
 
   <!-- Loading screen for initializing face-api models -->
   <div id="loadingOverlay" class="loading-overlay">
@@ -1076,38 +1066,6 @@
         </div>
       </div>
 
-      <!-- Modal Form Absen Event / Tugas Luar -->
-      <div id="tugasLuarOverlay" class="overlay" style="display: none;">
-        <div class="modal-card">
-          <h3 style="font-size: 1.2rem; font-weight: 700; color: #818cf8; margin-bottom: 8px;">📌 Absen Event / Tugas
-            Luar</h3>
-          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px; line-height: 1.4;">
-            Gunakan fitur ini jika Anda bertugas di luar outlet / event khusus. Pengajuan absensi memerlukan verifikasi
-            wajah & persetujuan Supervisor.
-          </p>
-
-          <div class="form-group" style="text-align: left;">
-            <label for="tugasLuarEventName">Nama Event / Nama Kegiatan *</label>
-            <input type="text" id="tugasLuarEventName" placeholder="Contoh: Event Food Expo Kemayoran" required onkeydown="if(event.key==='Enter') startTugasLuarScan()">
-          </div>
-
-          <!-- Error / Debug Details Box in Modal -->
-          <div id="tugasLuarErrorBox" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 10px; margin-top: 10px; font-size: 0.8rem; color: #fca5a5; text-align: left; word-break: break-word;"></div>
-
-          <div style="display: flex; gap: 10px; margin-top: 20px;">
-            <button type="button" class="btn" onclick="startTugasLuarScan()" style="flex: 1.2;">Lanjut Verifikasi Wajah
-              📸</button>
-            <button type="button" class="btn btn-secondary" onclick="closeTugasLuarModal()"
-              style="flex: 0.8;">Batal</button>
-          </div>
-
-          <div style="margin-top: 14px; text-align: center;">
-            <button type="button" onclick="showDebugPanel(true)" style="background: transparent; border: none; color: #a5b4fc; font-size: 0.8rem; text-decoration: underline; cursor: pointer;">
-              🐞 Tampilkan Detail Debug / Log Error
-            </button>
-          </div>
-        </div>
-      </div>
 
       <!-- Unbind Pending Overlay: Menunggu Persetujuan HR -->
       <div id="unbindPendingOverlay" style="
@@ -1299,7 +1257,40 @@
         </div>
       </div>
 
-      <script src="pwa_app.js?v=14.0" type="text/javascript"></script>
+  <!-- Modal Form Absen Event / Tugas Luar (HARUS di level body, BUKAN nested di dalam overlay lain) -->
+  <div id="tugasLuarOverlay" class="overlay" style="display: none; z-index: 10001;">
+    <div class="modal-card">
+      <h3 style="font-size: 1.2rem; font-weight: 700; color: #818cf8; margin-bottom: 8px;">📌 Absen Event / Tugas
+        Luar</h3>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px; line-height: 1.4;">
+        Gunakan fitur ini jika Anda bertugas di luar outlet / event khusus. Pengajuan absensi memerlukan verifikasi
+        wajah &amp; persetujuan Supervisor.
+      </p>
+
+      <div class="form-group" style="text-align: left;">
+        <label for="tugasLuarEventName">Nama Event / Nama Kegiatan *</label>
+        <input type="text" id="tugasLuarEventName" placeholder="Contoh: Event Food Expo Kemayoran" required onkeydown="if(event.key==='Enter') startTugasLuarScan()">
+      </div>
+
+      <!-- Error / Debug Details Box in Modal -->
+      <div id="tugasLuarErrorBox" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 10px; margin-top: 10px; font-size: 0.8rem; color: #fca5a5; text-align: left; word-break: break-word;"></div>
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button type="button" class="btn" onclick="startTugasLuarScan()" style="flex: 1.2;">Lanjut Verifikasi Wajah
+          📸</button>
+        <button type="button" class="btn btn-secondary" onclick="closeTugasLuarModal()"
+          style="flex: 0.8;">Batal</button>
+      </div>
+
+      <div style="margin-top: 14px; text-align: center;">
+        <button type="button" onclick="showDebugPanel(true)" style="background: transparent; border: none; color: #a5b4fc; font-size: 0.8rem; text-decoration: underline; cursor: pointer;">
+          🐞 Tampilkan Detail Debug / Log Error
+        </button>
+      </div>
+    </div>
+  </div>
+
+      <script src="pwa_app.js?v=14.1" type="text/javascript"></script>
 </body>
 
 </html>
