@@ -645,6 +645,18 @@
 
 <body>
 
+  <!-- Standalone Button untuk Pengecekan Absen Tugas Luar (Diluar container apapun) -->
+  <div style="padding: 12px; background: #1e1b4b; border-bottom: 2px solid #6366f1; text-align: center; display: flex; flex-direction: column; gap: 8px; align-items: center;">
+    <button type="button" class="btn" onclick="openTugasLuarModal()"
+      style="width: 100%; max-width: 400px; padding: 14px; font-size: 0.95rem; font-weight: 700; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); color: white; border: none; border-radius: 10px; box-shadow: 0 4px 14px rgba(99,102,241,0.4); cursor: pointer;">
+      📌 Absen Tugas Luar (Standalone Test)
+    </button>
+    <button type="button" onclick="showDebugPanel(true)"
+      style="background: transparent; border: none; color: #a5b4fc; font-size: 0.8rem; text-decoration: underline; cursor: pointer;">
+      🐞 Tampilkan Debug Info / Detail Error
+    </button>
+  </div>
+
   <!-- Loading screen for initializing face-api models -->
   <div id="loadingOverlay" class="loading-overlay">
     <div class="spinner"></div>
@@ -1286,7 +1298,7 @@
         </div>
       </div>
 
-      <script src="pwa_app.js?v=12.0" type="text/javascript"></script>
+      <script src="pwa_app.js?v=13.0" type="text/javascript"></script>
 </body>
 
 </html>
