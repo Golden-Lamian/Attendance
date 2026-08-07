@@ -743,8 +743,43 @@ async function tryAutoRestoreNRP(forceRefresh = false) {
 }
 
 // =========================================================================
-// SCANNER FUNCTIONS
+// VIEW MANAGEMENT & SCANNER FUNCTIONS
 // =========================================================================
+
+async function switchView(viewName) {
+  console.log(`[View] switchView('${viewName}') dipanggil`);
+  currentView = viewName;
+
+  try {
+    await stopAllCameras();
+  } catch (e) {
+    console.warn("stopAllCameras warning in switchView:", e);
+  }
+
+  document.querySelectorAll('.view-screen').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+
+  const tabButtons = document.querySelectorAll('.tab-bar .tab-btn');
+
+  if (viewName === 'scan') {
+    const vScan = document.getElementById('viewScan');
+    if (vScan) vScan.classList.add('active');
+    if (tabButtons[0]) tabButtons[0].classList.add('active');
+
+    resetToScanStep1UI();
+    startQRScanner();
+  } else if (viewName === 'register') {
+    const vReg = document.getElementById('viewRegister');
+    if (vReg) vReg.classList.add('active');
+    if (tabButtons[1]) tabButtons[1].classList.add('active');
+
+    stopRegistrationCamera();
+  } else if (viewName === 'am') {
+    const vAm = document.getElementById('viewAm');
+    if (vAm) vAm.classList.add('active');
+    if (tabButtons[2]) tabButtons[2].classList.add('active');
+  }
+}
 
 function resetToScanStep1UI() {
   const step1 = document.getElementById('scanStep1');
@@ -934,8 +969,13 @@ async function _startNativeBarcodeScanner(containerEl) {
   } catch (err) {
     dbgLog(`❌ Native scanner error: ${err.message}`);
     console.error('[DBG] _startNativeBarcodeScanner error:', err);
-    dbgLog('⬇️ Fallback ke Html5Qrcode...');
-    await _startHtml5QrcodeScanner(containerEl);
+    if (typeof jsQR !== 'undefined') {
+      dbgLog('⬇️ Fallback ke jsQR Scanner...');
+      await _startJsQRScanner(containerEl);
+    } else {
+      dbgLog('⬇️ Fallback ke Html5Qrcode...');
+      await _startHtml5QrcodeScanner(containerEl);
+    }
   }
 }
 
@@ -3049,6 +3089,13 @@ document.addEventListener('DOMContentLoaded', () => {
     loadFaceApiModels();
   } catch (e) {
     console.warn("Error starting loadFaceApiModels on startup:", e);
+  }
+
+  // Start initial view (Scan Absen) & QR scanner camera!
+  try {
+    switchView('scan');
+  } catch (e) {
+    console.warn("Error starting initial view on startup:", e);
   }
 });
 
