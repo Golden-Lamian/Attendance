@@ -34,6 +34,7 @@ let isTugasLuarMode = false;
 let tugasLuarEventName = "";
 
 function openTugasLuarModal() {
+  if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
   const overlay = document.getElementById('tugasLuarOverlay');
   const input = document.getElementById('tugasLuarEventName');
   if (input) input.value = '';
@@ -47,36 +48,50 @@ function closeTugasLuarModal() {
 }
 window.closeTugasLuarModal = closeTugasLuarModal;
 
-window.startTugasLuarScan = startTugasLuarScan;
-
 async function startTugasLuarScan() {
-  const input = document.getElementById('tugasLuarEventName');
-  const eventName = input ? input.value.trim() : '';
-  if (!eventName) {
-    alert("Harap masukkan Nama Event / Nama Kegiatan terlebih dahulu.");
-    return;
+  try {
+    const input = document.getElementById('tugasLuarEventName');
+    const eventName = input ? input.value.trim() : '';
+    if (!eventName) {
+      alert("Harap masukkan Nama Event / Nama Kegiatan terlebih dahulu.");
+      return;
+    }
+
+    isTugasLuarMode = true;
+    tugasLuarEventName = eventName;
+
+    closeTugasLuarModal();
+    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
+
+    // Pastikan layar viewScan aktif
+    document.querySelectorAll('.view-screen').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    const vScan = document.getElementById('viewScan');
+    if (vScan) vScan.classList.add('active');
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    if (tabBtns[0]) tabBtns[0].classList.add('active');
+
+    // Set simulated QR data for Tugas Luar Event
+    scannedQRData = {
+      outlet: "EVENT_" + eventName.toUpperCase().replace(/\s+/g, '_'),
+      totp_token: "TUGAS_LUAR_TOKEN",
+      timestamp: Math.floor(Date.now() / 1000)
+    };
+
+    const localNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
+    if (!localNRP) {
+      openSyncOverlay();
+      return;
+    }
+
+    // Stop QR Scanner and transition to Face Verification (Step 2)
+    await startLivenessCamera();
+  } catch (err) {
+    console.error("Gagal memulai Absen Tugas Luar:", err);
+    alert("Gagal memulai Absen Tugas Luar: " + (err.message || err.toString()));
   }
-
-  isTugasLuarMode = true;
-  tugasLuarEventName = eventName;
-  closeTugasLuarModal();
-
-  // Set simulated QR data for Tugas Luar Event
-  scannedQRData = {
-    outlet: "EVENT_" + eventName.toUpperCase().replace(/\s+/g, '_'),
-    totp_token: "TUGAS_LUAR_TOKEN",
-    timestamp: Math.floor(Date.now() / 1000)
-  };
-
-  const localNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
-  if (!localNRP) {
-    openSyncOverlay();
-    return;
-  }
-
-  // Stop QR Scanner and transition to Face Verification (Step 2)
-  await startLivenessCamera();
 }
+window.startTugasLuarScan = startTugasLuarScan;
 
 /**
  * Helper untuk mendapatkan tanggal lokal (YYYY-MM-DD) sesuai zona waktu pengguna (bukan UTC)
