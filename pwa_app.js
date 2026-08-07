@@ -2605,6 +2605,11 @@ function openSyncOverlay() {
   const overlay = document.getElementById('syncNrpOverlay');
   if (overlay) overlay.style.display = 'flex';
 }
+window.openSyncOverlay = openSyncOverlay;
+window.closeSyncOverlay = closeSyncOverlay;
+window.goToRegistrationFromOverlay = goToRegistrationFromOverlay;
+window.openUnbindOverlay = openUnbindOverlay;
+window.closeUnbindOverlay = closeUnbindOverlay;
 
 function showSyncResult(message, type) {
   const resultDiv = document.getElementById('syncResult');
