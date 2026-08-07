@@ -1871,7 +1871,6 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
             console.warn("High & low accuracy GPS error:", errFallback);
             dbgLog("❌ " + gpsErrMsg);
             showScanResult("❌ " + gpsErrMsg, "error");
-            showDebugPanel(true);
             setTimeout(() => {
               resetToScanStep1();
               startQRScanner();
@@ -1885,7 +1884,6 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
   } else {
     dbgLog("❌ Geolocation API tidak didukung pada browser ini.");
     showScanResult("❌ Fitur Geolocation/GPS tidak didukung pada browser ini.", "error");
-    showDebugPanel(true);
   }
 }
 
@@ -1918,7 +1916,6 @@ async function sendToGAS(payload) {
     if (resData && resData.status === "error") {
       console.warn("GAS menolak absensi:", resData.message);
       dbgLog("❌ GAS Rejection Error: " + resData.message);
-      showDebugPanel(true);
       if (challengeText) challengeText.innerText = "❌ Gagal: " + resData.message;
 
       const msgLower = (resData.message || "").toLowerCase();
@@ -1965,7 +1962,6 @@ async function sendToGAS(payload) {
   } catch (error) {
     console.error("Koneksi gagal/offline saat mengirim ke GAS:", error);
     dbgLog("❌ HTTP Exception/Offline: " + (error.message || error.toString()));
-    showDebugPanel(true);
     enqueueOfflineRecord(payload);
   }
 }
@@ -2159,7 +2155,7 @@ async function startTugasLuarScan() {
     dbgLog(`✅ Tugas Luar Event Name diset: "${eventName}"`);
 
     scannedQRData = {
-      outlet: "EVENT_" + eventName.toUpperCase().replace(/\s+/g, '_'),
+      outlet: "EVENT",
       totp_token: "TUGAS_LUAR_TOKEN",
       timestamp: Math.floor(Date.now() / 1000)
     };
@@ -2199,7 +2195,6 @@ async function startTugasLuarScan() {
       errBox.style.display = 'block';
       errBox.innerText = "❌ " + errorMsg;
     }
-    showDebugPanel(true);
     alert("❌ " + errorMsg);
 
     isTugasLuarMode = false;

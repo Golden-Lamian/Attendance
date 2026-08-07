@@ -789,7 +789,8 @@
   <div id="loadingOverlay" class="loading-overlay">
     <div class="spinner" id="loadingSpinner"></div>
     <h3 id="loadingOverlayTitle" style="font-weight: 600;">Mengunduh Model AI Wajah...</h3>
-    <p id="loadingOverlayText" style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; max-width: 300px; text-align: center;">
+    <p id="loadingOverlayText"
+      style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; max-width: 300px; text-align: center;">
       Proses ini memakan waktu beberapa detik pada pembukaan pertama.
     </p>
     <div id="loadingOverlayErrBox" style="display: none; margin-top: 12px; text-align: center;"></div>
@@ -872,8 +873,7 @@
             style="width: 100%; font-size: 0.85rem; padding: 12px; border-radius: 10px; background: rgba(99, 102, 241, 0.15) !important; color: #a5b4fc !important; border: 1px solid rgba(99, 102, 241, 0.35) !important;">
             📌 Absen Tugas Luar
           </button>
-          <button type="button" onclick="showDebugPanel(true)"
-            style="background: transparent; border: none; color: #818cf8; font-size: 0.8rem; text-decoration: underline; cursor: pointer; text-align: center;">
+          <button type="button" onclick="showDebugPanel(true)" style="display: none;">
             🐞 Tampilkan Debug Info / Detail Error
           </button>
         </div>
@@ -1042,8 +1042,7 @@
         style="margin-bottom: 6px; background: rgba(99, 102, 241, 0.15) !important; color: #a5b4fc !important; border: 1px solid rgba(99, 102, 241, 0.35) !important;">
         📌 Absen Tugas Luar (Tanpa QR)
       </button>
-      <button type="button" onclick="showDebugPanel(true)"
-        style="margin-bottom: 10px; background: transparent; border: none; color: #818cf8; font-size: 0.8rem; text-decoration: underline; cursor: pointer;">
+      <button type="button" onclick="showDebugPanel(true)" style="display: none;">
         🐞 Tampilkan Debug Info / Detail Error
       </button>
       <button id="btnSyncProfile" class="btn btn-secondary" onclick="syncFaceProfile(this)"
@@ -1376,7 +1375,7 @@
 
       <div class="form-group" style="text-align: left;">
         <label for="tugasLuarEventName">Nama Event / Nama Kegiatan *</label>
-        <input type="text" id="tugasLuarEventName" placeholder="Contoh: Event Food Expo Kemayoran" required>
+        <input type="text" id="tugasLuarEventName" placeholder="Contoh: Food Expo ___" required>
       </div>
 
       <!-- Error / Debug Details Box in Modal -->
@@ -1385,22 +1384,22 @@
       </div>
 
       <div style="display: flex; gap: 10px; margin-top: 20px;">
-        <button type="button" class="btn" id="tugasLuarStartBtn" onclick="startTugasLuarScan()" style="flex: 1.2;">Lanjut Verifikasi Wajah
+        <button type="button" class="btn" id="tugasLuarStartBtn" onclick="startTugasLuarScan()"
+          style="flex: 1.2;">Lanjut Verifikasi Wajah
           📸</button>
         <button type="button" class="btn btn-secondary" onclick="closeTugasLuarModal()"
           style="flex: 0.8;">Batal</button>
       </div>
 
       <div style="margin-top: 14px; text-align: center;">
-        <button type="button" onclick="showDebugPanel(true)"
-          style="background: transparent; border: none; color: #a5b4fc; font-size: 0.8rem; text-decoration: underline; cursor: pointer;">
+        <button type="button" onclick="showDebugPanel(true)" style="display: none;">
           🐞 Tampilkan Detail Debug / Log Error
         </button>
       </div>
     </div>
   </div>
 
-  <script src="pwa_app.js?v=45" type="text/javascript"></script>
+  <script src="pwa_app.js?v=47" type="text/javascript"></script>
 </body>
 
 </html>
