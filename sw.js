@@ -1,4 +1,4 @@
-const CACHE_NAME = 'attendance-pwa-v37';
+const CACHE_NAME = 'attendance-pwa-v38';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -52,6 +52,20 @@ self.addEventListener('fetch', (event) => {
     url.includes('script.googleusercontent.com')
   ) {
     return; // Serahkan langsung ke jaringan native browser
+  }
+
+  // Network-First untuk pwa_app.js & index.html agar pengguna selalu mendapat versi terbaru
+  if (url.includes('pwa_app.js') || url.includes('index.html') || url.endsWith('/')) {
+    event.respondWith(
+      fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseToCache));
+        }
+        return networkResponse;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
   }
 
   event.respondWith(

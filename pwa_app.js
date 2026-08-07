@@ -39,11 +39,15 @@ function openTugasLuarModal() {
   if (input) input.value = '';
   if (overlay) overlay.style.display = 'flex';
 }
+window.openTugasLuarModal = openTugasLuarModal;
 
 function closeTugasLuarModal() {
   const overlay = document.getElementById('tugasLuarOverlay');
   if (overlay) overlay.style.display = 'none';
 }
+window.closeTugasLuarModal = closeTugasLuarModal;
+
+window.startTugasLuarScan = startTugasLuarScan;
 
 function startTugasLuarScan() {
   const input = document.getElementById('tugasLuarEventName');
@@ -3345,11 +3349,15 @@ async function openAmLoginModal() {
     }
   }
 }
+window.openAmLoginModal = openAmLoginModal;
 
 function closeAmLoginModal() {
   const overlay = document.getElementById('amLoginModalOverlay');
   if (overlay) overlay.style.display = 'none';
 }
+window.closeAmLoginModal = closeAmLoginModal;
+
+window.submitAmLogin = submitAmLogin;
 
 /**
  * Memproses Submit Login Area Manager (Nama + PIN)
