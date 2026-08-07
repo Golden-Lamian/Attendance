@@ -781,6 +781,8 @@ async function switchView(viewName) {
   }
 }
 
+window.switchView = switchView;
+
 function resetToScanStep1UI() {
   const step1 = document.getElementById('scanStep1');
   const step2 = document.getElementById('scanStep2');
@@ -2107,6 +2109,9 @@ function closeTugasLuarModal() {
   if (overlay) overlay.style.display = 'none';
 }
 
+window.openTugasLuarModal = openTugasLuarModal;
+window.closeTugasLuarModal = closeTugasLuarModal;
+
 async function startTugasLuarScan() {
   dbgLog("▶ [Absen Tugas Luar] startTugasLuarScan dipanggil");
   const errBox = document.getElementById('tugasLuarErrorBox');
@@ -3108,6 +3113,28 @@ document.addEventListener('DOMContentLoaded', () => {
     console.warn("Error starting initial view on startup:", e);
   }
 });
+
+async function forceAppUpdateAndClearCache() {
+  if (confirm("Perbarui aplikasi ke versi terbaru dan hapus cache?")) {
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) await reg.unregister();
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+    } catch (e) { }
+    window.location.reload(true);
+  }
+}
+
+window.startTugasLuarScan = startTugasLuarScan;
+window.forceAppUpdateAndClearCache = forceAppUpdateAndClearCache;
+window.loadFaceApiModels = loadFaceApiModels;
+window.dismissLoadingOverlay = dismissLoadingOverlay;
+
 
 
 
