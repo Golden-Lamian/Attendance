@@ -34,11 +34,24 @@ let isTugasLuarMode = false;
 let tugasLuarEventName = "";
 
 function openTugasLuarModal() {
-  if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
-  const overlay = document.getElementById('tugasLuarOverlay');
-  const input = document.getElementById('tugasLuarEventName');
-  if (input) input.value = '';
-  if (overlay) overlay.style.display = 'flex';
+  try {
+    dbgLog("📌 openTugasLuarModal dipanggil - membuka modal Absen Tugas Luar");
+    if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
+    const overlay = document.getElementById('tugasLuarOverlay');
+    const input = document.getElementById('tugasLuarEventName');
+    const errBox = document.getElementById('tugasLuarErrorBox');
+    if (input) input.value = '';
+    if (errBox) {
+      errBox.style.display = 'none';
+      errBox.innerText = '';
+    }
+    if (overlay) overlay.style.display = 'flex';
+    showDebugPanel(false);
+  } catch (err) {
+    console.error("Error saat membuka modal Tugas Luar:", err);
+    dbgLog("❌ Error openTugasLuarModal: " + (err.message || err.toString()));
+    showDebugPanel(true);
+  }
 }
 window.openTugasLuarModal = openTugasLuarModal;
 
@@ -49,16 +62,24 @@ function closeTugasLuarModal() {
 window.closeTugasLuarModal = closeTugasLuarModal;
 
 async function startTugasLuarScan() {
+  dbgLog("▶ [Absen Tugas Luar] startTugasLuarScan dipanggil");
+  const errBox = document.getElementById('tugasLuarErrorBox');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerText = ''; }
+
   try {
     const input = document.getElementById('tugasLuarEventName');
     const eventName = input ? input.value.trim() : '';
     if (!eventName) {
-      alert("Harap masukkan Nama Event / Nama Kegiatan terlebih dahulu.");
+      const msg = "Harap masukkan Nama Event / Nama Kegiatan terlebih dahulu.";
+      dbgLog("⚠️ " + msg);
+      if (errBox) { errBox.style.display = 'block'; errBox.innerText = "⚠️ " + msg; }
+      alert(msg);
       return;
     }
 
     isTugasLuarMode = true;
     tugasLuarEventName = eventName;
+    dbgLog(`✅ Tugas Luar Event Name diset: "${eventName}"`);
 
     closeTugasLuarModal();
     if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
@@ -77,18 +98,31 @@ async function startTugasLuarScan() {
       totp_token: "TUGAS_LUAR_TOKEN",
       timestamp: Math.floor(Date.now() / 1000)
     };
+    dbgLog(`📦 Simulated scannedQRData set: ${JSON.stringify(scannedQRData)}`);
 
     const localNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
     if (!localNRP) {
+      const nrpWarn = "NRP belum terdaftar di perangkat ini. Silakan daftarkan atau sinkronkan NRP terlebih dahulu.";
+      dbgLog("⚠️ " + nrpWarn);
+      alert("⚠️ " + nrpWarn);
       openSyncOverlay();
       return;
     }
+    dbgLog(`👤 Registered NRP: ${localNRP}`);
 
     // Stop QR Scanner and transition to Face Verification (Step 2)
+    dbgLog("🎥 Memulai kamera verifikasi wajah (startLivenessCamera)...");
     await startLivenessCamera();
   } catch (err) {
+    const errorMsg = "Gagal memulai Absen Tugas Luar: " + (err.message || err.toString());
     console.error("Gagal memulai Absen Tugas Luar:", err);
-    alert("Gagal memulai Absen Tugas Luar: " + (err.message || err.toString()));
+    dbgLog("❌ " + errorMsg + "\nStack: " + (err.stack || 'no stack'));
+    if (errBox) {
+      errBox.style.display = 'block';
+      errBox.innerText = "❌ " + errorMsg;
+    }
+    showDebugPanel(true);
+    alert(errorMsg);
   }
 }
 window.startTugasLuarScan = startTugasLuarScan;
@@ -127,10 +161,10 @@ function cleanupOldAttendanceStatus() {
 /**
  * Tampilkan panel debug di UI dengan snapshot semua state saat ini.
  */
-function showDebugPanel() {
+function showDebugPanel(forceOpen = true) {
   const panel = document.getElementById('debugPanel');
   if (!panel) return;
-  panel.style.display = 'block';
+  if (forceOpen) panel.style.display = 'flex';
 
   const now = new Date().toLocaleTimeString('id-ID', { hour12: false });
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.innerText = text; };
@@ -146,8 +180,17 @@ function showDebugPanel() {
   }
 
   // NRP tersimpan
-  const nrp = localStorage.getItem('attendance_registered_nrp');
+  const nrp = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
   set('dbgNRP', `👤 NRP tersimpan: ${nrp || '(tidak ada)'}`);
+
+  // Status Tugas Luar
+  set('dbgTugasLuarState', `📌 Tugas Luar Mode: ${isTugasLuarMode ? `AKTIF ("${tugasLuarEventName}")` : 'Non-Aktif'}`);
+
+  // Status AI Model
+  set('dbgModelsLoaded', `🤖 AI Models Loaded: ${isModelsLoaded}`);
+
+  // Status Internet
+  set('dbgOnlineStatus', `🌐 Sinyal Internet: ${navigator.onLine ? 'Online' : 'Offline'}`);
 
   // Flag state
   set('dbgIsProcessing', `🔒 isProcessingQRScan: ${isProcessingQRScan}`);
@@ -173,19 +216,33 @@ function showDebugPanel() {
   set('dbgReaderEl',
     `🗂 #reader children: ${readerEl ? readerEl.children.length : 'element not found'}`);
 
-  // Reset log area
-  const logEl = document.getElementById('dbgLog');
-  if (logEl) logEl.innerText = '';
-
-  console.log('=== [DEBUG] restartQRScanner() dipanggil ===');
+  console.log('=== [DEBUG] State Snapshot ===');
   console.log('scannedQRData:', scannedQRData);
   console.log('NRP tersimpan:', nrp);
+  console.log('isTugasLuarMode:', isTugasLuarMode, tugasLuarEventName);
+  console.log('isModelsLoaded:', isModelsLoaded);
   console.log('isProcessingQRScan:', isProcessingQRScan);
-  console.log('isRestartingScanner:', isRestartingScanner);
-  console.log('html5QrcodeScanner:', html5QrcodeScanner);
   console.log('scanStream:', scanStream);
-  console.log('#reader children:', readerEl ? readerEl.children.length : 'not found');
 }
+window.showDebugPanel = showDebugPanel;
+
+function closeDebugPanel() {
+  const panel = document.getElementById('debugPanel');
+  if (panel) panel.style.display = 'none';
+}
+window.closeDebugPanel = closeDebugPanel;
+
+function copyDebugLog() {
+  const logEl = document.getElementById('dbgLog');
+  if (logEl && logEl.innerText) {
+    navigator.clipboard.writeText(logEl.innerText).then(() => {
+      alert("Log debug berhasil disalin ke clipboard!");
+    }).catch(e => {
+      alert("Gagal menyalin log: " + e.message);
+    });
+  }
+}
+window.copyDebugLog = copyDebugLog;
 
 /**
  * Tambah baris log ke debug panel UI sekaligus ke console.
@@ -194,7 +251,12 @@ function dbgLog(msg) {
   const logEl = document.getElementById('dbgLog');
   if (logEl) {
     const time = new Date().toLocaleTimeString('id-ID', { hour12: false, second: '2-digit' });
-    logEl.innerText += `[${time}] ${msg}\n`;
+    if (logEl.innerText === '(Belum ada log)') {
+      logEl.innerText = `[${time}] ${msg}\n`;
+    } else {
+      logEl.innerText += `[${time}] ${msg}\n`;
+    }
+    logEl.scrollTop = logEl.scrollHeight;
   }
   console.log(`[DBG] ${msg}`);
 }
@@ -866,13 +928,13 @@ async function handleClockInClick() {
 
   const outletName = (scannedQRData && (scannedQRData.outlet || scannedQRData.outlet_id)) || '';
 
-  // Jika shift belum sempat di-fetch/di-load, pastikan di-fetch terlebih dahulu
-  if ((!cachedOutletShifts || cachedOutletShifts.length === 0) && outletName) {
+  // Untuk Tugas Luar, tidak memerlukan fetch shift outlet dari server
+  if (!isTugasLuarMode && (!cachedOutletShifts || cachedOutletShifts.length === 0) && outletName) {
     showScanResult("⏳ Memuat opsi shift jam kerja...", "info");
     await fetchOutletShifts(outletName);
   }
 
-  if (cachedOutletShifts && cachedOutletShifts.length > 0) {
+  if (!isTugasLuarMode && cachedOutletShifts && cachedOutletShifts.length > 0) {
     openShiftOverlay();
   } else {
     submitAttendance('CLOCK_IN', '', '');
@@ -1967,34 +2029,64 @@ function submitAttendance(attendanceType = "CLOCK_IN", selectedWorkingHour = "",
       payload.notes = "Absen " + typeLabel + " (Tugas Luar Event: " + tugasLuarEventName + ") [Supervisor Approval Required | Tugas Luar: " + tugasLuarEventName + "]";
     }
 
+    dbgLog("📤 Mengirim payload absensi: " + JSON.stringify({
+      nrp: payload.nrp,
+      outlet: payload.outlet,
+      is_tugas_luar: payload.is_tugas_luar,
+      tugas_luar_notes: payload.tugas_luar_notes,
+      attendance_type: payload.attendance_type,
+      latitude: payload.latitude,
+      longitude: payload.longitude,
+      accuracy: payload.accuracy
+    }));
+
     if (navigator.onLine) {
       sendToGAS(payload);
     } else {
+      dbgLog("⚠️ Perangkat Offline. Menyimpan ke antrean offline.");
       enqueueOfflineRecord(payload);
     }
     isTugasLuarMode = false;
     tugasLuarEventName = "";
   }
 
-  // Ambil lokasi GPS HP dengan validasi presisi tinggi
+  // Ambil lokasi GPS HP dengan validasi presisi tinggi (dilengkapi fallback standar)
   if (navigator.geolocation) {
+    dbgLog("📍 Meminta lokasi GPS HP (High Accuracy)...");
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const accuracy = position.coords ? (position.coords.accuracy || 0) : 0;
+        dbgLog(`📍 GPS Berhasil: Lat=${position.coords.latitude}, Lng=${position.coords.longitude}, Acc=${accuracy}m`);
         proceedWithPayload(position.coords.latitude, position.coords.longitude, accuracy);
       },
       (error) => {
-        console.warn("High accuracy GPS error:", error);
-        showScanResult("❌ Gagal mendapatkan lokasi GPS HP Anda. Pastikan izin lokasi aktif dan tidak menggunakan Fake GPS.", "error");
-        setTimeout(() => {
-          resetToScanStep1();
-          startQRScanner();
-        }, 4000);
+        dbgLog(`⚠️ High accuracy GPS error (${error.message}). Mencoba opsi GPS standar...`);
+        navigator.geolocation.getCurrentPosition(
+          (posFallback) => {
+            const accFB = posFallback.coords ? (posFallback.coords.accuracy || 0) : 0;
+            dbgLog(`📍 GPS Fallback Berhasil: Lat=${posFallback.coords.latitude}, Lng=${posFallback.coords.longitude}, Acc=${accFB}m`);
+            proceedWithPayload(posFallback.coords.latitude, posFallback.coords.longitude, accFB);
+          },
+          (errFallback) => {
+            const gpsErrMsg = "Gagal mendapatkan lokasi GPS HP Anda (" + (errFallback.message || "Timeout/Permission Denied") + "). Pastikan izin lokasi aktif dan tidak menggunakan Fake GPS.";
+            console.warn("High & low accuracy GPS error:", errFallback);
+            dbgLog("❌ " + gpsErrMsg);
+            showScanResult("❌ " + gpsErrMsg, "error");
+            showDebugPanel(true);
+            setTimeout(() => {
+              resetToScanStep1();
+              startQRScanner();
+            }, 5000);
+          },
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 30000 }
+        );
       },
       { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 }
     );
   } else {
+    dbgLog("❌ Geolocation API tidak didukung pada browser ini.");
     showScanResult("❌ Fitur Geolocation/GPS tidak didukung pada browser ini.", "error");
+    showDebugPanel(true);
   }
 }
 
@@ -2044,6 +2136,7 @@ function saveTodayAttendanceStatus(nrp, statusObj) {
 async function sendToGAS(payload) {
   const challengeText = document.getElementById('challengeText');
   try {
+    dbgLog("🚀 Mengirim HTTP POST ke GAS: " + GAS_URL);
     if (challengeText) challengeText.innerText = "📤 Mengirim absensi ke server...";
     showScanResult("Mengirim data ke server Google Sheets...", "success");
 
@@ -2056,15 +2149,21 @@ async function sendToGAS(payload) {
       body: JSON.stringify(payload)
     });
 
+    dbgLog("📥 Respon HTTP Status: " + response.status + " " + response.statusText);
+
     let resData = null;
     try {
       resData = await response.json();
+      dbgLog("📄 Respon Body GAS JSON: " + JSON.stringify(resData));
     } catch (e) {
+      dbgLog("⚠️ Gagal parse JSON dari GAS: " + e.message);
       console.log("Membaca respon JSON standar dari GAS:", e);
     }
 
     if (resData && resData.status === "error") {
       console.warn("GAS menolak absensi:", resData.message);
+      dbgLog("❌ GAS Rejection Error: " + resData.message);
+      showDebugPanel(true);
       if (challengeText) challengeText.innerText = "❌ Gagal: " + resData.message;
 
       const msgLower = (resData.message || "").toLowerCase();
@@ -2089,6 +2188,7 @@ async function sendToGAS(payload) {
       return;
     }
 
+    dbgLog("✅ Absensi Berhasil Diterima Server GAS");
     saveLocalAttendanceStatus(payload.nrp, payload.attendance_type, payload.working_hour);
 
     // Broadcast event absensi ke outlet_display.html (Auto Refresh Setelah Clock In)
@@ -2112,6 +2212,8 @@ async function sendToGAS(payload) {
 
   } catch (error) {
     console.error("Koneksi gagal/offline saat mengirim ke GAS:", error);
+    dbgLog("❌ HTTP Exception/Offline: " + (error.message || error.toString()));
+    showDebugPanel(true);
     enqueueOfflineRecord(payload);
   }
 }
