@@ -3481,9 +3481,13 @@ async function handleSupervisorDecision(targetNrp, targetTimestamp, decision, ca
  * Membuka Modal Login Area Manager & Mengambil daftar nama AM dari GAS
  */
 async function populateAmDropdown() {
-  const select = document.getElementById('amSelectName');
-  if (!select) return;
-  select.innerHTML = '<option value="">⏳ Memuat daftar Area Manager...</option>';
+  const selects = [
+    document.getElementById('amSelectName'),
+    document.getElementById('amModalSelectName')
+  ].filter(Boolean);
+
+  if (selects.length === 0) return;
+  selects.forEach(s => s.innerHTML = '<option value="">⏳ Memuat daftar Area Manager...</option>');
   
   const defaultAmList = [
     "AM Area Jabodetabek (Demo)",
@@ -3496,15 +3500,19 @@ async function populateAmDropdown() {
     const resData = await response.json();
     const amList = (resData && (resData.data || resData.message)) ? (resData.data || resData.message) : [];
 
-    if (Array.isArray(amList) && amList.length > 0) {
+    const listToUse = (Array.isArray(amList) && amList.length > 0) ? amList : defaultAmList;
+    selects.forEach(select => {
       select.innerHTML = '<option value="">-- Pilih Area Manager --</option>';
-      amList.forEach(am => {
+      listToUse.forEach(am => {
         const opt = document.createElement('option');
         opt.value = am;
         opt.innerText = am;
         select.appendChild(opt);
       });
-    } else {
+    });
+  } catch (err) {
+    console.warn("Gagal mengambil daftar AM dari cloud, memuat opsi demo:", err);
+    selects.forEach(select => {
       select.innerHTML = '<option value="">-- Pilih Area Manager --</option>';
       defaultAmList.forEach(am => {
         const opt = document.createElement('option');
@@ -3512,15 +3520,6 @@ async function populateAmDropdown() {
         opt.innerText = am;
         select.appendChild(opt);
       });
-    }
-  } catch (err) {
-    console.warn("Gagal mengambil daftar AM dari cloud, memuat opsi demo:", err);
-    select.innerHTML = '<option value="">-- Pilih Area Manager --</option>';
-    defaultAmList.forEach(am => {
-      const opt = document.createElement('option');
-      opt.value = am;
-      opt.innerText = am;
-      select.appendChild(opt);
     });
   }
 }
@@ -3559,11 +3558,13 @@ window.submitAmLogin = submitAmLogin;
  * Memproses Submit Login Area Manager (Nama + PIN)
  */
 async function submitAmLogin(amNameOver = null, amPinOver = null, isAutoLogin = false) {
-  const selectEl = document.getElementById('amSelectName');
-  const pinEl = document.getElementById('amPinInput');
+  const selectEl = document.getElementById('amSelectName') || document.getElementById('amModalSelectName');
+  const modalSelectEl = document.getElementById('amModalSelectName');
+  const pinEl = document.getElementById('amPinInput') || document.getElementById('amModalPinInput');
+  const modalPinEl = document.getElementById('amModalPinInput');
 
-  const amName = amNameOver || (selectEl ? selectEl.value : '');
-  const pin = amPinOver || (pinEl ? pinEl.value : '');
+  const amName = amNameOver || (selectEl && selectEl.value ? selectEl.value : (modalSelectEl ? modalSelectEl.value : ''));
+  const pin = amPinOver || (pinEl && pinEl.value ? pinEl.value : (modalPinEl ? modalPinEl.value : ''));
 
   if (!amName) {
     alert("Silakan pilih Nama Area Manager terlebih dahulu.");

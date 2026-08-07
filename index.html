@@ -144,7 +144,8 @@
       margin-bottom: 20px;
     }
 
-    label {
+    label,
+    .step-label {
       display: block;
       font-size: 0.85rem;
       font-weight: 500;
@@ -721,7 +722,7 @@
     <!-- VIEW 1: SCAN ABSENSI (DEFAULT) -->
     <div id="viewScan" class="view-screen active">
       <div id="scanStep1">
-        <label>Langkah 1: Scan QR Code di Monitor PC</label>
+        <div class="step-label">Langkah 1: Scan QR Code di Monitor PC</div>
         <div class="scanner-viewport">
           <div id="reader"></div>
           <div class="qr-scan-guide">
@@ -751,7 +752,7 @@
       </div>
 
       <div id="scanStep2" style="display: none; position: relative;">
-        <label>Langkah 2: Verifikasi Wajah & Keaktifan (Tersenyum 😊)</label>
+        <div class="step-label">Langkah 2: Verifikasi Wajah & Keaktifan (Tersenyum 😊)</div>
         <div class="camera-viewport">
           <video id="scanFaceVideo" autoplay muted playsinline></video>
           <div class="face-overlay">
@@ -764,7 +765,7 @@
       </div>
 
       <div id="scanStep3" style="display: none; position: relative;">
-        <label>Langkah 3: Pilih Menu Absensi</label>
+        <div class="step-label">Langkah 3: Pilih Menu Absensi</div>
 
         <div class="menu-grid-2x2" style="margin-top: 14px;">
           <button type="button" class="menu-card clock-in" onclick="handleClockInClick()">
@@ -798,7 +799,7 @@
       </div>
 
       <div id="registerCameraArea" style="display:none;">
-        <label>Pendaftaran Sampel Wajah (Kamera Depan)</label>
+        <div class="step-label">Pendaftaran Sampel Wajah (Kamera Depan)</div>
         <div class="camera-viewport">
           <video id="regFaceVideo" autoplay muted playsinline></video>
           <div class="face-overlay">
@@ -846,7 +847,7 @@
       <div id="amLoginForm"
         style="display: flex; flex-direction: column; gap: 14px; text-align: left; margin-bottom: 20px;">
         <div>
-          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Nama Area Manager</label>
+          <label for="amSelectName" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Nama Area Manager</label>
           <select id="amSelectName"
             style="width: 100%; margin-top: 4px; padding: 11px 14px; border-radius: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600; font-size: 0.95rem;">
             <option value="">-- Memuat daftar AM... --</option>
@@ -854,7 +855,7 @@
         </div>
 
         <div>
-          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Passcode Area
+          <label for="amPinInput" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Passcode Area
             Manager</label>
           <input type="password" id="amPinInput" placeholder="Masukkan PIN (Default: 1234)"
             style="width: 100%; margin-top: 4px; padding: 11px 14px; border-radius: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600; letter-spacing: 2px;">
@@ -1041,13 +1042,13 @@
 
           <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; text-align: left;">
             <div>
-              <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">NRP Karyawan</label>
+              <label for="unbindReqNrp" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">NRP Karyawan</label>
               <input type="text" id="unbindReqNrp" placeholder="Masukkan NRP Anda"
                 style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.15); color: #f8fafc; font-weight: 600;">
             </div>
 
             <div>
-              <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Alasan Pengajuan</label>
+              <label for="unbindReqReason" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Alasan Pengajuan</label>
               <select id="unbindReqReason"
                 style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: #1e293b; border: 1px solid rgba(255,255,255,0.15); color: #f8fafc; font-weight: 600;">
                 <option value="📱 Ganti Perangkat HP Baru">📱 Ganti Perangkat HP Baru</option>
@@ -1058,7 +1059,7 @@
             </div>
 
             <div>
-              <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Catatan Tambahan
+              <label for="unbindReqNotes" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Catatan Tambahan
                 (Opsional)</label>
               <input type="text" id="unbindReqNotes" placeholder="Contoh: HP lama hilang/layar pecah"
                 style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.15); color: #f8fafc;">
@@ -1200,17 +1201,17 @@
 
           <div style="display: flex; flex-direction: column; gap: 14px; text-align: left; margin-bottom: 20px;">
             <div>
-              <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Nama Area Manager</label>
-              <select id="amSelectName"
+              <label for="amModalSelectName" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Nama Area Manager</label>
+              <select id="amModalSelectName"
                 style="width: 100%; margin-top: 4px; padding: 11px 14px; border-radius: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600; font-size: 0.95rem;">
                 <option value="">-- Memuat daftar AM... --</option>
               </select>
             </div>
 
             <div>
-              <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Passcode Area
+              <label for="amModalPinInput" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Passcode Area
                 Manager</label>
-              <input type="password" id="amPinInput" placeholder="Masukkan PIN (Default: 1234)"
+              <input type="password" id="amModalPinInput" placeholder="Masukkan PIN (Default: 1234)"
                 style="width: 100%; margin-top: 4px; padding: 11px 14px; border-radius: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600; letter-spacing: 2px;">
             </div>
           </div>
@@ -1237,20 +1238,20 @@
 
           <div style="display: flex; flex-direction: column; gap: 12px; text-align: left; margin-bottom: 20px;">
             <div>
-              <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Lama Saat Ini</label>
+              <label for="oldPinInput" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Lama Saat Ini</label>
               <input type="password" id="oldPinInput" placeholder="Masukkan PIN lama"
                 style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600;">
             </div>
 
             <div>
-              <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Baru (Min. 4
+              <label for="newPinInput" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Baru (Min. 4
                 Digit)</label>
               <input type="password" id="newPinInput" placeholder="Masukkan PIN baru"
                 style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600;">
             </div>
 
             <div>
-              <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Konfirmasi PIN Baru</label>
+              <label for="confirmNewPinInput" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Konfirmasi PIN Baru</label>
               <input type="password" id="confirmNewPinInput" placeholder="Ulangi PIN baru"
                 style="width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600;">
             </div>
@@ -1298,7 +1299,7 @@
         </div>
       </div>
 
-      <script src="pwa_app.js?v=13.0" type="text/javascript"></script>
+      <script src="pwa_app.js?v=14.0" type="text/javascript"></script>
 </body>
 
 </html>
