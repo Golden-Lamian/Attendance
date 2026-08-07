@@ -3321,6 +3321,7 @@ async function handleSupervisorDecision(targetNrp, targetTimestamp, decision, ca
  * Membuka Modal Login Area Manager & Mengambil daftar nama AM dari GAS
  */
 async function openAmLoginModal() {
+  if (typeof closeSyncOverlay === 'function') closeSyncOverlay();
   const overlay = document.getElementById('amLoginModalOverlay');
   const select = document.getElementById('amSelectName');
   if (overlay) overlay.style.display = 'flex';
