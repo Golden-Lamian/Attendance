@@ -357,22 +357,19 @@ window.addEventListener('DOMContentLoaded', async () => {
   await identifyDeviceUser();
   await loadFaceApiModels();
 
-  // Cek status unbind di background (non-blocking) saat app dibuka
-  // Ini menangani kasus karyawan buka PWA tanpa scan QR tapi sudah ada request pending/approved
-  const startupNRP = localStorage.getItem('attendance_registered_nrp') ||
-                     localStorage.getItem('attendance_pending_unbind_nrp');
-  if (startupNRP && navigator.onLine) {
-    // Jalankan di background, tidak blocking startup
+  // Cek status unbind di background saat app dibuka HANYA jika ada request unbind pending
+  const pendingUnbindNRP = localStorage.getItem('attendance_pending_unbind_nrp');
+  if (pendingUnbindNRP && navigator.onLine) {
     setTimeout(async () => {
-      const unbindStatus = await checkUnbindStatusFromServer(startupNRP);
+      const unbindStatus = await checkUnbindStatusFromServer(pendingUnbindNRP);
       if (unbindStatus.status === 'PENDING') {
-        localStorage.setItem('attendance_pending_unbind_nrp', startupNRP);
-        showUnbindPendingScreen(startupNRP, unbindStatus.requested_at);
+        showUnbindPendingScreen(pendingUnbindNRP, unbindStatus.requested_at);
       } else if (unbindStatus.status === 'APPROVED') {
-        await handleUnbindApproved(startupNRP);
+        await handleUnbindApproved(pendingUnbindNRP);
+      } else {
+        localStorage.removeItem('attendance_pending_unbind_nrp');
       }
-      // NONE / REJECTED: tidak perlu aksi
-    }, 2000); // Delay 2 detik agar UI selesai render dulu
+    }, 2000);
   }
 
   // Cek jika halaman dibuka dari scan kamera bawaan HP (parameter URL)
@@ -414,33 +411,6 @@ function checkURLParameters() {
         if (!localNRP) {
           openSyncOverlay(); // Tampilkan overlay sinkronisasi profil wajah
         } else {
-          const unbindStatus = await checkUnbindStatusFromServer(localNRP);
-          if (unbindStatus.status === 'PENDING') {
-            localStorage.setItem('attendance_pending_unbind_nrp', localNRP);
-            showUnbindPendingScreen(localNRP, unbindStatus.requested_at);
-          } else if (unbindStatus.status === 'APPROVED') {
-            await handleUnbindApproved(localNRP);
-          } else {
-            startLivenessCamera();
-          }
-        }
-      })();
-      return true;
-    }
-
-    // Cek status unbind sebelum lanjut ke kamera — async tapi fungsi ini sync
-    // Gunakan IIFE async agar tidak mengubah return type
-    (async () => {
-      const unbindStatus = await checkUnbindStatusFromServer(localNRP);
-      if (unbindStatus.status === 'PENDING') {
-        localStorage.setItem('attendance_pending_unbind_nrp', localNRP);
-        showUnbindPendingScreen(localNRP, unbindStatus.requested_at);
-      } else if (unbindStatus.status === 'APPROVED') {
-        await handleUnbindApproved(localNRP);
-      } else {
-        // Pindah langsung ke Langkah 2: Verifikasi Wajah (Kamera Depan)
-        startLivenessCamera();
-      }
     })();
     return true;
   }
@@ -1569,28 +1539,33 @@ async function onQRScanSuccess(decodedText, decodedResult) {
 
         if (!activeNRP) {
           openSyncOverlay();
-        } else {
-          // === CEK STATUS UNBIND SEBELUM LANJUT ===
-          dbgLog('🔍 Mengecek status unbind untuk NRP: ' + activeNRP);
-          const unbindStatus = await checkUnbindStatusFromServer(activeNRP);
+          isProcessingQRScan = false;
+          return;
+        }
+
+        // Cek status unbind HANYA jika perangkat ini memiliki request unbind pending
+        const pendingUnbindNRP = localStorage.getItem('attendance_pending_unbind_nrp');
+        if (pendingUnbindNRP) {
+          dbgLog('🔍 Mengecek status unbind pending untuk NRP: ' + pendingUnbindNRP);
+          const unbindStatus = await checkUnbindStatusFromServer(pendingUnbindNRP);
           dbgLog('📋 Status unbind: ' + unbindStatus.status);
 
           if (unbindStatus.status === 'PENDING') {
-            // Karyawan tidak bisa absen — tampilkan overlay tunggu HR
-            localStorage.setItem('attendance_pending_unbind_nrp', activeNRP);
-            showUnbindPendingScreen(activeNRP, unbindStatus.requested_at);
+            showUnbindPendingScreen(pendingUnbindNRP, unbindStatus.requested_at);
             isProcessingQRScan = false;
-            return; // Stop di sini
+            return;
           } else if (unbindStatus.status === 'APPROVED') {
-            // Device sudah di-approve untuk diganti — arahkan ke registrasi ulang
-            await handleUnbindApproved(activeNRP);
+            await handleUnbindApproved(pendingUnbindNRP);
             isProcessingQRScan = false;
-            return; // Stop di sini
+            return;
+          } else {
+            localStorage.removeItem('attendance_pending_unbind_nrp');
           }
-          // Status NONE / REJECTED: lanjut normal
-          await startLivenessCamera();
-          dbgLog('✅ Kamera depan aktif — Langkah 2 dimulai!');
         }
+
+        // Status normal / terdaftar: lanjut ke Kamera Depan
+        await startLivenessCamera();
+        dbgLog('✅ Kamera depan aktif — Langkah 2 dimulai!');
       } catch (err) {
         console.error("Transisi ke Langkah 2 gagal:", err);
         dbgLog('❌ Transisi gagal: ' + (err.message || err.toString()));
