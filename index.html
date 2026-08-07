@@ -703,6 +703,7 @@
       <button class="tab-btn" onclick="switchView('register')">
         Registrasi <span id="offlineBadge" class="offline-count" style="display:none;">0</span>
       </button>
+      <button class="tab-btn" onclick="switchView('am')">👔 Login AM</button>
     </div>
 
     <!-- VIEW 1: SCAN ABSENSI (DEFAULT) -->
@@ -813,6 +814,48 @@
         <button type="button" class="btn btn-secondary" onclick="openUnbindOverlay()" style="font-size: 0.85rem; padding: 10px 14px; width: 100%; border-color: rgba(239, 68, 68, 0.4); color: #ef4444;">
           📱 Request Unbind HP / Ganti Perangkat
         </button>
+      </div>
+    </div>
+
+    <!-- VIEW 3: PANEL LOGIN & APPROVAL AREA MANAGER -->
+    <div id="viewAm" class="view-screen">
+      <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 4px; text-align: center; color: var(--text-main);">
+        👔 Panel Area Manager
+      </h2>
+      <p style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-bottom: 16px;">
+        Pilih Nama Area Manager & PIN Passcode untuk mengakses Panel Approval.
+      </p>
+
+      <div id="amLoginForm" style="display: flex; flex-direction: column; gap: 14px; text-align: left; margin-bottom: 20px;">
+        <div>
+          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Nama Area Manager</label>
+          <select id="amSelectName" style="width: 100%; margin-top: 4px; padding: 11px 14px; border-radius: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600; font-size: 0.95rem;">
+            <option value="">-- Memuat daftar AM... --</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">PIN Passcode Area Manager</label>
+          <input type="password" id="amPinInput" placeholder="Masukkan PIN (Default: 1234)" style="width: 100%; margin-top: 4px; padding: 11px 14px; border-radius: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255,255,255,0.2); color: #f8fafc; font-weight: 600; letter-spacing: 2px;">
+        </div>
+
+        <button class="btn btn-primary" onclick="submitAmLogin()" style="font-weight: 700; background: linear-gradient(135deg, #f59e0b, #d97706); color: #000; padding: 14px; border-radius: 12px; border: none; cursor: pointer;">🚀 Login & Buka Approval</button>
+      </div>
+
+      <div id="amLoggedInArea" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; padding: 10px 14px;">
+          <div>
+            <div id="amLoggedInName" style="font-size: 0.95rem; color: #fbbf24; font-weight: 700;">👋 Halo Area Manager</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">Sesi Login Aktif</div>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button class="btn btn-secondary" onclick="openChangePinModal()" style="font-size: 0.75rem; padding: 6px 10px; width: auto;">🔐 Ubah PIN</button>
+            <button class="btn btn-secondary" onclick="logoutAmSession()" style="font-size: 0.75rem; padding: 6px 10px; width: auto; color: #ef4444 !important; border-color: rgba(239,68,68,0.4) !important;">🚪 Logout</button>
+          </div>
+        </div>
+        <div id="amPendingListTabContainer" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; max-height: 380px; overflow-y: auto;">
+          <!-- Card pengajuan approval AM -->
+        </div>
       </div>
     </div>
 
@@ -1165,7 +1208,7 @@
     </div>
   </div>
 
-  <script src="pwa_app.js?v=9.0" type="text/javascript"></script>
+  <script src="pwa_app.js?v=11.0" type="text/javascript"></script>
 </body>
 
 </html>
