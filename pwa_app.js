@@ -49,7 +49,7 @@ window.closeTugasLuarModal = closeTugasLuarModal;
 
 window.startTugasLuarScan = startTugasLuarScan;
 
-function startTugasLuarScan() {
+async function startTugasLuarScan() {
   const input = document.getElementById('tugasLuarEventName');
   const eventName = input ? input.value.trim() : '';
   if (!eventName) {
@@ -68,14 +68,14 @@ function startTugasLuarScan() {
     timestamp: Math.floor(Date.now() / 1000)
   };
 
-  // Stop QR Scanner and transition to Face Verification (Step 2)
-  stopQRScanner();
-  const step1 = document.getElementById('scanStep1');
-  const step2 = document.getElementById('scanStep2');
-  if (step1) step1.style.display = 'none';
-  if (step2) step2.style.display = 'block';
+  const localNRP = localStorage.getItem('attendance_registered_nrp') || (currentUserProfile ? currentUserProfile.nrp : '');
+  if (!localNRP) {
+    openSyncOverlay();
+    return;
+  }
 
-  startScanCameraAndDetect();
+  // Stop QR Scanner and transition to Face Verification (Step 2)
+  await startLivenessCamera();
 }
 
 /**
