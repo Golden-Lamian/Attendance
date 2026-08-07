@@ -3091,6 +3091,16 @@ document.addEventListener('DOMContentLoaded', () => {
     console.warn("Error starting loadFaceApiModels on startup:", e);
   }
 
+  // Attach explicit listeners for Tugas Luar buttons
+  const btnTL1 = document.getElementById('tugasLuarBtn');
+  if (btnTL1) btnTL1.addEventListener('click', () => openTugasLuarModal());
+
+  const btnTL2 = document.getElementById('tugasLuarSyncBtn');
+  if (btnTL2) btnTL2.addEventListener('click', () => openTugasLuarModal());
+
+  const btnTLStart = document.getElementById('tugasLuarStartBtn');
+  if (btnTLStart) btnTLStart.addEventListener('click', () => startTugasLuarScan());
+
   // Start initial view (Scan Absen) & QR scanner camera!
   try {
     switchView('scan');
