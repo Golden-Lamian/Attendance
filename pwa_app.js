@@ -553,6 +553,128 @@ function stopRegistrationCamera() {
   if (area) area.style.display = 'none';
   if (btn) btn.style.display = 'block';
 }
+
+async function startRegistrationFlow() {
+  const regNRPInput = document.getElementById('regNRP');
+  const nrp = regNRPInput ? regNRPInput.value.trim() : '';
+  if (!nrp) {
+    showRegResult("Silakan masukkan NRP Anda terlebih dahulu.", "error");
+    return;
+  }
+
+  const btnStartReg = document.getElementById('btnStartReg');
+  if (btnStartReg) btnStartReg.style.display = 'none';
+
+  const regArea = document.getElementById('registerCameraArea');
+  if (regArea) regArea.style.display = 'block';
+
+  const regProgress = document.getElementById('regProgress');
+  if (regProgress) regProgress.innerHTML = 'Memuat model AI & membuka kamera...';
+
+  const resultDiv = document.getElementById('regResult');
+  if (resultDiv) resultDiv.style.display = 'none';
+
+  try {
+    if (typeof faceapi !== 'undefined' && (!faceapi.nets.tinyFaceDetector.params || !faceapi.nets.faceLandmark64Net.params)) {
+      await loadFaceApiModels();
+    }
+  } catch (e) {
+    console.warn("[Reg] Warning loading face models:", e);
+  }
+
+  try {
+    await stopAllCameras();
+    regStream = await openCameraStream("user");
+    const videoEl = document.getElementById('regFaceVideo');
+    if (videoEl) {
+      videoEl.srcObject = regStream;
+      await videoEl.play().catch(e => console.warn("Video play warning:", e));
+    }
+    if (regProgress) regProgress.innerHTML = 'Posisikan wajah Anda di dalam bidang oval lalu tekan tombol <strong>Ambil Foto</strong>.';
+    const btnCapture = document.getElementById('btnCapturePhoto');
+    if (btnCapture) {
+      btnCapture.style.display = 'block';
+      btnCapture.disabled = false;
+      btnCapture.className = 'btn';
+      btnCapture.innerHTML = 'Ambil Foto';
+    }
+  } catch (err) {
+    console.error("[Reg] Gagal membuka kamera registrasi:", err);
+    showRegResult("Gagal membuka kamera depan. Pastikan izin kamera telah diberikan.", "error");
+    stopRegistrationCamera();
+  }
+}
+
+async function captureFaceEmbeddings(btnElement) {
+  const regNRPInput = document.getElementById('regNRP');
+  const nrp = regNRPInput ? regNRPInput.value.trim() : '';
+  if (!nrp) {
+    showRegResult("NRP tidak boleh kosong.", "error");
+    stopRegistrationCamera();
+    return;
+  }
+
+  const regProgress = document.getElementById('regProgress');
+  if (regProgress) regProgress.innerHTML = '⏳ Menganalisis sampel wajah... Harap tenang.';
+
+  const videoEl = document.getElementById('regFaceVideo');
+  if (!videoEl || !regStream) {
+    showRegResult("Kamera registrasi tidak aktif.", "error");
+    stopRegistrationCamera();
+    return;
+  }
+
+  try {
+    const detection = await faceapi.detectSingleFace(videoEl, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (!detection) {
+      showRegResult("Wajah tidak terdeteksi. Posisikan wajah Anda di tengah kamera dan coba lagi.", "error");
+      if (btnElement) {
+        btnElement.style.display = 'block';
+        btnElement.disabled = false;
+      }
+      if (regProgress) regProgress.innerHTML = 'Posisikan wajah Anda di dalam bidang oval lalu tekan tombol <strong>Ambil Foto</strong>.';
+      return;
+    }
+
+    const faceEmbedding = Array.from(detection.descriptor);
+    const deviceId = getOrCreateDeviceId();
+
+    if (regProgress) regProgress.innerHTML = '📡 Mengirim data registrasi ke server...';
+
+    const payload = {
+      action: "register_face",
+      nrp: nrp,
+      face_embedding: faceEmbedding,
+      device_id: deviceId
+    };
+
+    const response = await fetch(GAS_URL, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+
+    const resData = await response.json();
+
+    if (resData.status === 'success' || resData.success) {
+      localStorage.setItem('attendance_registered_nrp', nrp);
+      showRegResult(`✅ Registrasi Sukses! Perangkat HP & Sampel Wajah untuk NRP ${nrp} berhasil terdaftar.`, "success");
+      stopRegistrationCamera();
+    } else {
+      showRegResult(`❌ Registrasi Gagal: ${resData.message || 'Terjadi kesalahan pada server.'}`, "error");
+      if (btnElement) {
+        btnElement.style.display = 'block';
+        btnElement.disabled = false;
+      }
+    }
+  } catch (err) {
+    console.error("[Reg] Registrasi face embeddings error:", err);
+    showRegResult("Gagal memproses sampel wajah: " + err.message, "error");
+    stopRegistrationCamera();
+  }
+}
 // =========================================================================
 // FACE API MODELS
 // =========================================================================
