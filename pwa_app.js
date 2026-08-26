@@ -2121,33 +2121,72 @@ async function syncOfflineQueue() {
   const existingQueue = localStorage.getItem('offline_attendance_queue');
   if (!existingQueue) return;
 
-  const queue = JSON.parse(existingQueue);
-  if (queue.length === 0) return;
+  let queue = [];
+  try {
+    queue = JSON.parse(existingQueue);
+  } catch (e) {
+    localStorage.removeItem('offline_attendance_queue');
+    return;
+  }
+  if (!Array.isArray(queue) || queue.length === 0) return;
 
   console.log("Mencoba sinkronisasi " + queue.length + " rekaman absensi offline...");
+  dbgLog("🔄 Memulai sinkronisasi " + queue.length + " data antrean offline...");
 
-  let successCount = 0;
+  const remainingQueue = [];
 
   for (let i = 0; i < queue.length; i++) {
+    const record = queue[i];
     try {
-      await fetch(GAS_URL, {
+      const response = await fetch(GAS_URL, {
         method: "POST",
-        mode: "no-cors",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(queue[i])
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8"
+        },
+        body: JSON.stringify(record)
       });
-      successCount++;
+
+      let resData = null;
+      try {
+        resData = await response.json();
+      } catch (parseErr) {
+        console.warn("Respon non-JSON saat sinkronisasi offline:", parseErr);
+      }
+
+      if (resData && resData.status === "success") {
+        console.log(`✅ Rekaman offline NRP ${record.nrp} (${record.attendance_type}) berhasil disinkronkan ke Cloud.`);
+        dbgLog(`✅ Offline sync sukses: ${record.nrp} - ${record.attendance_type}`);
+      } else if (resData && resData.status === "error") {
+        const msg = (resData.message || "").toLowerCase();
+        // Jika server menolak karena duplikat/sudah absen hari ini atau sudah expired, buang dari antrean agar tidak stuck
+        if (msg.includes("sudah") || msg.includes("duplikat") || msg.includes("berulang kali") || msg.includes("expired") || msg.includes("kedaluwarsa")) {
+          console.warn(`⚠️ Rekaman offline NRP ${record.nrp} ditolak permanen (${resData.message}), dihapus dari antrean.`);
+          dbgLog(`⚠️ Offline record discarded: ${resData.message}`);
+        } else {
+          // Kesalahan sementara (misal server busy 530), simpan di remainingQueue
+          console.warn(`⏳ Server sibuk saat sinkronisasi offline NRP ${record.nrp}:`, resData.message);
+          remainingQueue.push(record);
+        }
+      } else {
+        // Fallback jika tidak ada data respon yang jelas
+        remainingQueue.push(record);
+      }
     } catch (err) {
-      console.error("Gagal menyinkronkan rekaman index " + i + ":", err);
+      console.error("Gagal menyinkronkan rekaman offline index " + i + ":", err);
+      dbgLog("❌ Gagal sync offline index " + i + ": " + (err.message || err.toString()));
+      remainingQueue.push(record);
+      // Jika jaringan putus di tengah jalan, pertahankan sisa antrean
+      for (let j = i + 1; j < queue.length; j++) {
+        remainingQueue.push(queue[j]);
+      }
       break;
     }
   }
 
-  if (successCount > 0) {
-    console.log("Berhasil menyinkronkan " + successCount + " data absensi offline.");
-    const remainingQueue = queue.slice(successCount);
-    localStorage.setItem('offline_attendance_queue', JSON.stringify(remainingQueue));
-    updateOfflineBadge();
+  localStorage.setItem('offline_attendance_queue', JSON.stringify(remainingQueue));
+  updateOfflineBadge();
+  if (remainingQueue.length === 0) {
+    dbgLog("🎉 Seluruh antrean absensi offline telah berhasil disinkronkan ke server!");
   }
 }
 
