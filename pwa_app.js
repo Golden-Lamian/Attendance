@@ -1491,13 +1491,18 @@ async function runLivenessLoop(video) {
   const faceGuide = document.getElementById('faceGuide');
   const challengeText = document.getElementById('challengeText');
 
-  const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+  const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
     .withFaceLandmarks()
     .withFaceDescriptor();
 
   if (detection) {
     faceVerified = true;
-    latestLiveDescriptor = Array.from(detection.descriptor);
+    
+    // Simpan sampel descriptor netral sebelum senyuman lebar mendistorsi geometri wajah
+    if (smileFrameCount === 0 || !latestLiveDescriptor) {
+      latestLiveDescriptor = Array.from(detection.descriptor);
+    }
+    
     faceGuide.className = "face-guide-oval verified";
 
     if (!livenessPassed) {
@@ -2051,6 +2056,8 @@ async function sendToGAS(payload) {
         extraTip = "<br><br><span style='font-size:0.85rem; color:#60a5fa;'>💡 <strong>Status lokal diperbarui:</strong> Anda terdeteksi sudah melakukan Clock In di Cloud hari ini. Silakan pilih menu <strong>Pulang Kerja</strong> atau <strong>Istirahat</strong>.</span>";
       } else if (msgLower.includes("perangkat") || msgLower.includes("device")) {
         extraTip = "<br><br><span style='font-size:0.8rem; color:#cbd5e1;'>💡 <strong>Solusi:</strong> Karena data browser pernah dihapus, silakan buka tab <strong>Registrasi</strong> dan lakukan <strong>Mulai Registrasi (Ambil Foto)</strong> untuk memperbarui Perangkat Resmi HP ini di server.</span>";
+      } else if (msgLower.includes("wajah") || msgLower.includes("cocok")) {
+        extraTip = "<br><br><span style='font-size:0.8rem; color:#cbd5e1;'>💡 <strong>Solusi:</strong> Pastikan pencahayaan cukup dan hadapkan wajah lurus ke kamera. Jika masih tidak cocok, silakan buka tab <strong>Registrasi</strong> untuk memperbarui foto wajah Anda.</span>";
       }
 
       showScanResult("❌ Ditolak Server: " + resData.message + extraTip, "error");
